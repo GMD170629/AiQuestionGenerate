@@ -191,6 +191,23 @@ class Database:
                 )
             """)
             
+            # 知识点节点表（存储从切片中提取的知识点语义信息）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_nodes (
+                    node_id TEXT PRIMARY KEY,
+                    chunk_id INTEGER NOT NULL,
+                    file_id TEXT NOT NULL,
+                    core_concept TEXT NOT NULL,
+                    prerequisites_json TEXT NOT NULL,
+                    confusion_points_json TEXT NOT NULL,
+                    bloom_level INTEGER NOT NULL CHECK(bloom_level >= 1 AND bloom_level <= 6),
+                    application_scenarios_json TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (chunk_id) REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+                    FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+                )
+            """)
+            
             # AI配置表（存储API端点、密钥和模型）
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS ai_config (
@@ -259,6 +276,15 @@ class Database:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_chapter_chunks_chunk ON chapter_chunks(chunk_id)
             """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_chunk_id ON knowledge_nodes(chunk_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_file_id ON knowledge_nodes(file_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_bloom_level ON knowledge_nodes(bloom_level)
+            """)
             
             conn.commit()
     
@@ -269,6 +295,8 @@ class Database:
         conn.row_factory = sqlite3.Row  # 使用 Row 工厂，可以通过列名访问
         # 设置 text_factory 为 str，确保正确处理 Unicode 字符（包括中文）
         conn.text_factory = str
+        # 启用外键约束
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
         finally:
@@ -1495,6 +1523,251 @@ class Database:
             cursor.execute("DELETE FROM chapters WHERE file_id = ?", (file_id,))
             conn.commit()
             return True
+    
+    # ========== 知识点节点相关方法 ==========
+    
+    def store_knowledge_node(self, node_id: str, chunk_id: int, file_id: str,
+                            core_concept: str, prerequisites: List[str],
+                            confusion_points: List[str], bloom_level: int,
+                            application_scenarios: Optional[List[str]] = None) -> bool:
+        """
+        存储知识点节点
+        
+        Args:
+            node_id: 节点 ID
+            chunk_id: 关联的切片 ID
+            file_id: 所属文件 ID
+            core_concept: 核心概念
+            prerequisites: 前置依赖知识点列表
+            confusion_points: 学生易错点列表
+            bloom_level: Bloom 认知层级（1-6）
+            application_scenarios: 应用场景列表（可选）
+            
+        Returns:
+            是否成功存储
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+            
+            prerequisites_json = json.dumps(prerequisites, ensure_ascii=False)
+            confusion_points_json = json.dumps(confusion_points, ensure_ascii=False)
+            application_scenarios_json = json.dumps(application_scenarios, ensure_ascii=False) if application_scenarios else None
+            
+            try:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO knowledge_nodes 
+                    (node_id, chunk_id, file_id, core_concept, prerequisites_json, 
+                     confusion_points_json, bloom_level, application_scenarios_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (node_id, chunk_id, file_id, core_concept, prerequisites_json,
+                      confusion_points_json, bloom_level, application_scenarios_json, now))
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError as e:
+                print(f"存储知识点节点失败: {e}")
+                return False
+    
+    def get_knowledge_node(self, node_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取知识点节点信息
+        
+        Args:
+            node_id: 节点 ID
+            
+        Returns:
+            知识点节点信息字典，如果不存在则返回 None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT node_id, chunk_id, file_id, core_concept, prerequisites_json,
+                       confusion_points_json, bloom_level, application_scenarios_json, created_at
+                FROM knowledge_nodes
+                WHERE node_id = ?
+            """, (node_id,))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "node_id": row["node_id"],
+                    "chunk_id": row["chunk_id"],
+                    "file_id": row["file_id"],
+                    "core_concept": row["core_concept"],
+                    "prerequisites": json.loads(row["prerequisites_json"]),
+                    "confusion_points": json.loads(row["confusion_points_json"]),
+                    "bloom_level": row["bloom_level"],
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                    "created_at": row["created_at"]
+                }
+            return None
+    
+    def get_chunk_knowledge_nodes(self, chunk_id: int) -> List[Dict[str, Any]]:
+        """
+        获取切片关联的所有知识点节点
+        
+        Args:
+            chunk_id: 切片 ID
+            
+        Returns:
+            知识点节点列表
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT node_id, chunk_id, file_id, core_concept, prerequisites_json,
+                       confusion_points_json, bloom_level, application_scenarios_json, created_at
+                FROM knowledge_nodes
+                WHERE chunk_id = ?
+                ORDER BY created_at ASC
+            """, (chunk_id,))
+            rows = cursor.fetchall()
+            nodes = []
+            for row in rows:
+                nodes.append({
+                    "node_id": row["node_id"],
+                    "chunk_id": row["chunk_id"],
+                    "file_id": row["file_id"],
+                    "core_concept": row["core_concept"],
+                    "prerequisites": json.loads(row["prerequisites_json"]),
+                    "confusion_points": json.loads(row["confusion_points_json"]),
+                    "bloom_level": row["bloom_level"],
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                    "created_at": row["created_at"]
+                })
+            return nodes
+    
+    def get_file_knowledge_nodes(self, file_id: str) -> List[Dict[str, Any]]:
+        """
+        获取文件的所有知识点节点
+        
+        Args:
+            file_id: 文件 ID
+            
+        Returns:
+            知识点节点列表
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT node_id, chunk_id, file_id, core_concept, prerequisites_json,
+                       confusion_points_json, bloom_level, application_scenarios_json, created_at
+                FROM knowledge_nodes
+                WHERE file_id = ?
+                ORDER BY created_at ASC
+            """, (file_id,))
+            rows = cursor.fetchall()
+            nodes = []
+            for row in rows:
+                nodes.append({
+                    "node_id": row["node_id"],
+                    "chunk_id": row["chunk_id"],
+                    "file_id": row["file_id"],
+                    "core_concept": row["core_concept"],
+                    "prerequisites": json.loads(row["prerequisites_json"]),
+                    "confusion_points": json.loads(row["confusion_points_json"]),
+                    "bloom_level": row["bloom_level"],
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                    "created_at": row["created_at"]
+                })
+            return nodes
+    
+    def delete_knowledge_node(self, node_id: str) -> bool:
+        """
+        删除知识点节点
+        
+        Args:
+            node_id: 节点 ID
+            
+        Returns:
+            是否成功删除
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM knowledge_nodes WHERE node_id = ?", (node_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def delete_file_knowledge_nodes(self, file_id: str) -> bool:
+        """
+        删除文件的所有知识点节点
+        
+        Args:
+            file_id: 文件 ID
+            
+        Returns:
+            是否成功删除
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM knowledge_nodes WHERE file_id = ?", (file_id,))
+            conn.commit()
+            return True
+    
+    def get_textbook_knowledge_nodes(self, textbook_id: str) -> List[Dict[str, Any]]:
+        """
+        获取教材下所有文件的知识点节点
+        
+        Args:
+            textbook_id: 教材 ID
+            
+        Returns:
+            知识点节点列表
+        """
+        # 先获取教材下的所有文件
+        files = self.get_textbook_files(textbook_id)
+        if not files:
+            return []
+        
+        # 获取所有文件的知识点
+        file_ids = [file["file_id"] for file in files]
+        placeholders = ",".join(["?"] * len(file_ids))
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT node_id, chunk_id, file_id, core_concept, prerequisites_json,
+                       confusion_points_json, bloom_level, application_scenarios_json, created_at
+                FROM knowledge_nodes
+                WHERE file_id IN ({placeholders})
+                ORDER BY created_at ASC
+            """, file_ids)
+            rows = cursor.fetchall()
+            nodes = []
+            for row in rows:
+                nodes.append({
+                    "node_id": row["node_id"],
+                    "chunk_id": row["chunk_id"],
+                    "file_id": row["file_id"],
+                    "core_concept": row["core_concept"],
+                    "prerequisites": json.loads(row["prerequisites_json"]) if row["prerequisites_json"] else [],
+                    "confusion_points": json.loads(row["confusion_points_json"]) if row["confusion_points_json"] else [],
+                    "bloom_level": row["bloom_level"],
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                    "created_at": row["created_at"]
+                })
+            return nodes
+    
+    def update_knowledge_node_prerequisites(self, node_id: str, prerequisites: List[str]) -> bool:
+        """
+        更新知识点节点的前置依赖
+        
+        Args:
+            node_id: 节点 ID
+            prerequisites: 前置依赖知识点列表
+            
+        Returns:
+            是否成功更新
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            prerequisites_json = json.dumps(prerequisites, ensure_ascii=False)
+            cursor.execute("""
+                UPDATE knowledge_nodes
+                SET prerequisites_json = ?
+                WHERE node_id = ?
+            """, (prerequisites_json, node_id))
+            conn.commit()
+            return cursor.rowcount > 0
 
 
 # 全局数据库实例

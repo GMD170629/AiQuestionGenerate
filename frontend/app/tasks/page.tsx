@@ -87,7 +87,7 @@ export default function TasksPage() {
     try {
       setCreating(true)
       setError(null)
-      const response = await fetch('http://localhost:8000/generate-book', {
+      const response = await fetch('http://localhost:8000/tasks/generate-book', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ textbook_id: selectedTextbookId }),

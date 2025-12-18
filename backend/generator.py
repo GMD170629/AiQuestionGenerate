@@ -12,6 +12,7 @@ import httpx
 from models import Question, QuestionList
 from md_processor import MarkdownProcessor
 from database import db
+from graph_manager import knowledge_graph
 
 # 确保使用 UTF-8 编码
 if sys.stdout.encoding != 'utf-8':
@@ -27,14 +28,17 @@ DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 # 基础系统提示词
-BASE_SYSTEM_PROMPT = """你是一位资深的计算机科学教授，拥有丰富的教学和出题经验。你的任务是根据提供的教材片段，生成高质量的计算机科学习题。
+BASE_SYSTEM_PROMPT = """你是一位资深的计算机科学教授，拥有丰富的教学和出题经验。你的任务是**基于知识点信息**生成高质量的计算机科学习题。
 
 ## 核心要求：
-1. **术语准确性**：确保所有术语准确无误，如"死锁"、"复杂度 O(n)"、"解引用"、"递归"等专业术语必须正确使用。
-2. **题目质量**：题目应该具有教学价值，能够检验学生对知识点的理解程度。
-3. **难度适中**：根据教材内容的深度，合理设置题目难度。
-4. **答案唯一性**：确保答案明确、唯一，避免歧义。
-5. **基于教材**：题目必须基于提供的教材内容，解析中需引用教材原句或逻辑。
+1. **基于知识点生成**：题目应基于提供的知识点信息（核心概念、认知层级、前置依赖、易错点、应用场景）生成，而不是直接基于参考文本。参考文本仅作为背景信息。
+2. **术语准确性**：确保所有术语准确无误，如"死锁"、"复杂度 O(n)"、"解引用"、"递归"等专业术语必须正确使用。
+3. **题目质量**：题目应该具有教学价值，能够检验学生对知识点的理解程度。
+4. **难度适中**：根据知识点的 Bloom 认知层级，合理设置题目难度和复杂度。
+5. **答案唯一性**：确保答案明确、唯一，避免歧义。
+6. **知识关联**：如果提供了前置知识点上下文，请结合前置知识来设计题目，帮助学生建立知识之间的关联。在解析中必须说明："此题旨在通过[前置知识]来深化对[当前概念]的理解"。
+7. **易错点关注**：充分利用提供的易错点信息，设计能够检验和纠正常见错误的题目。
+8. **应用场景**：结合应用场景信息，设计贴近实际应用的题目。
 
 ## 自适应出题策略：
 **重要**：请根据提供的文本内容的复杂度和信息量，自主决定出题的数量（1-5题）和最合适的题型组合。
@@ -353,9 +357,224 @@ def detect_code_in_text(text: str) -> bool:
     return code_count >= 3  # 如果包含3个或以上代码特征，认为包含代码
 
 
+def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    从前置 chunks 中提取知识点信息（核心概念、前置依赖、Bloom 层级等）
+    
+    这是新的出题流程的第一步：从 chunks 中提取知识点，而不是直接使用文本
+    
+    Args:
+        chunks: 切片列表
+        
+    Returns:
+        包含完整知识点信息的字典：
+        - core_concept: 核心概念
+        - bloom_level: Bloom 认知层级
+        - prerequisites: 前置依赖知识点列表（字符串列表）
+        - prerequisites_context: 前置知识点上下文列表（详细信息）
+        - confusion_points: 学生易错点列表
+        - application_scenarios: 应用场景列表
+        - knowledge_summary: 知识点摘要（用于生成题目）
+    """
+    result = {
+        "core_concept": None,
+        "bloom_level": None,
+        "prerequisites": [],
+        "prerequisites_context": [],
+        "confusion_points": [],
+        "application_scenarios": [],
+        "knowledge_summary": ""
+    }
+    
+    try:
+        # 尝试从数据库获取 chunks 的知识点节点
+        if not chunks:
+            return result
+        
+        # 收集所有 chunks 的知识点信息
+        all_knowledge_nodes = []
+        
+        for chunk in chunks:
+            chunk_content = chunk.get("content", "")
+            chunk_metadata = chunk.get("metadata", {})
+            file_id = chunk_metadata.get("source", "")
+            
+            if not file_id:
+                continue
+            
+            # 提取 file_id（如果 source 是文件路径）
+            import re
+            uuid_pattern = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+            uuid_match = re.search(uuid_pattern, file_id, re.IGNORECASE)
+            actual_file_id = uuid_match.group(0) if uuid_match else file_id
+            
+            # 查询数据库，找到匹配的 chunk_id
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
+                content_prefix = chunk_content[:200] if len(chunk_content) > 200 else chunk_content
+                content_length = len(chunk_content)
+                
+                cursor.execute("""
+                    SELECT chunk_id FROM chunks 
+                    WHERE file_id = ? 
+                    AND LENGTH(content) BETWEEN ? AND ?
+                    AND content LIKE ?
+                    LIMIT 1
+                """, (actual_file_id, max(0, content_length - 100), content_length + 100, content_prefix + "%"))
+                row = cursor.fetchone()
+                
+                if row:
+                    chunk_id = row["chunk_id"]
+                    # 获取该 chunk 的知识点节点
+                    knowledge_nodes = db.get_chunk_knowledge_nodes(chunk_id)
+                    all_knowledge_nodes.extend(knowledge_nodes)
+        
+        # 如果没有找到知识点节点，尝试从第一个 chunk 提取
+        if not all_knowledge_nodes and chunks:
+            # 可以在这里调用 LLM 实时提取知识点（如果需要）
+            # 但为了性能，我们优先使用已存储的知识点
+            pass
+        
+        # 合并所有知识点信息
+        if all_knowledge_nodes:
+            # 使用第一个知识点节点作为主要知识点
+            primary_kn = all_knowledge_nodes[0]
+            
+            result["core_concept"] = primary_kn.get("core_concept")
+            result["bloom_level"] = primary_kn.get("bloom_level")
+            result["prerequisites"] = primary_kn.get("prerequisites", [])
+            result["confusion_points"] = primary_kn.get("confusion_points", [])
+            result["application_scenarios"] = primary_kn.get("application_scenarios") or []
+            
+            # 获取前置知识点上下文（通过知识图谱）
+            if result["core_concept"]:
+                prerequisites_context = knowledge_graph.get_prerequisite_context(
+                    result["core_concept"], max_depth=3, max_concepts=3
+                )
+                result["prerequisites_context"] = prerequisites_context
+            
+            # 构建知识点摘要（用于生成题目）
+            summary_parts = []
+            
+            if result["core_concept"]:
+                summary_parts.append(f"核心概念：{result['core_concept']}")
+            
+            if result["bloom_level"]:
+                bloom_names = {
+                    1: "记忆",
+                    2: "理解",
+                    3: "应用",
+                    4: "分析",
+                    5: "评价",
+                    6: "创造"
+                }
+                summary_parts.append(f"认知层级：{bloom_names.get(result['bloom_level'], '未知')}（Level {result['bloom_level']}）")
+            
+            if result["prerequisites"]:
+                summary_parts.append(f"前置依赖：{', '.join(result['prerequisites'][:3])}")
+            
+            if result["confusion_points"]:
+                summary_parts.append(f"易错点：{', '.join(result['confusion_points'][:3])}")
+            
+            if result["application_scenarios"]:
+                summary_parts.append(f"应用场景：{', '.join(result['application_scenarios'][:2])}")
+            
+            result["knowledge_summary"] = "；".join(summary_parts)
+            
+            # 如果没有摘要，使用核心概念作为摘要
+            if not result["knowledge_summary"] and result["core_concept"]:
+                result["knowledge_summary"] = f"核心概念：{result['core_concept']}"
+    
+    except Exception as e:
+        # 如果获取失败，不影响题目生成
+        print(f"警告：从 chunks 提取知识点失败: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return result
+
+
+def build_knowledge_based_prompt(knowledge_info: Dict[str, Any], 
+                                 chunks: Optional[List[Dict[str, Any]]] = None) -> str:
+    """
+    基于知识点信息构建题目生成提示词
+    
+    这是新的出题流程的核心：基于知识点而不是原始文本生成题目
+    
+    Args:
+        knowledge_info: 知识点信息字典（来自 extract_knowledge_from_chunks）
+        chunks: 原始 chunks（仅作为参考，不直接使用）
+        
+    Returns:
+        构建好的提示词字符串
+    """
+    prompt_parts = []
+    
+    # 核心概念
+    core_concept = knowledge_info.get("core_concept")
+    if core_concept:
+        prompt_parts.append(f"## 目标知识点：{core_concept}\n")
+    
+    # Bloom 认知层级
+    bloom_level = knowledge_info.get("bloom_level")
+    if bloom_level:
+        bloom_names = {
+            1: "记忆（Remember）",
+            2: "理解（Understand）",
+            3: "应用（Apply）",
+            4: "分析（Analyze）",
+            5: "评价（Evaluate）",
+            6: "创造（Create）"
+        }
+        prompt_parts.append(f"**认知层级**：Level {bloom_level} - {bloom_names.get(bloom_level, '未知')}\n")
+    
+    # 知识点摘要
+    knowledge_summary = knowledge_info.get("knowledge_summary", "")
+    if knowledge_summary:
+        prompt_parts.append(f"**知识点摘要**：{knowledge_summary}\n")
+    
+    # 前置依赖知识点
+    prerequisites_context = knowledge_info.get("prerequisites_context", [])
+    if prerequisites_context:
+        prompt_parts.append("\n## 前置知识点上下文：\n")
+        prompt_parts.append("以下是与当前知识点相关的前置依赖知识点，请在设计题目时结合这些前置知识：\n\n")
+        for idx, prereq in enumerate(prerequisites_context, 1):
+            prereq_concept = prereq.get("concept", "")
+            prereq_summary = prereq.get("summary", "")
+            prereq_depth = prereq.get("depth", 0)
+            prompt_parts.append(f"{idx}. **{prereq_concept}**（深度 {prereq_depth}）\n")
+            prompt_parts.append(f"   {prereq_summary}\n\n")
+    
+    # 易错点
+    confusion_points = knowledge_info.get("confusion_points", [])
+    if confusion_points:
+        prompt_parts.append(f"\n## 学生易错点：\n")
+        for idx, point in enumerate(confusion_points[:5], 1):  # 最多显示5个
+            prompt_parts.append(f"{idx}. {point}\n")
+    
+    # 应用场景
+    application_scenarios = knowledge_info.get("application_scenarios", [])
+    if application_scenarios:
+        prompt_parts.append(f"\n## 应用场景：\n")
+        for idx, scenario in enumerate(application_scenarios[:3], 1):  # 最多显示3个
+            prompt_parts.append(f"{idx}. {scenario}\n")
+    
+    # 原始文本参考（可选，仅作为背景信息）
+    if chunks:
+        prompt_parts.append("\n## 参考文本（仅作为背景信息，题目应基于知识点而非文本）：\n")
+        # 只显示第一个 chunk 的前500字符作为参考
+        first_chunk_content = chunks[0].get("content", "")[:500]
+        if first_chunk_content:
+            prompt_parts.append(f"```markdown\n{first_chunk_content}...\n```\n")
+            prompt_parts.append("\n**注意**：以上文本仅供参考，题目应基于知识点信息生成，而不是直接基于文本内容。\n")
+    
+    return "\n".join(prompt_parts)
+
+
 def build_type_specific_prompt(question_types: List[str], question_count: int, 
                                context: Optional[str] = None, 
-                               adaptive: bool = False) -> str:
+                               adaptive: bool = False,
+                               knowledge_context: Optional[Dict[str, Any]] = None) -> str:
     """
     构建题型专用的提示词
     
@@ -364,16 +583,42 @@ def build_type_specific_prompt(question_types: List[str], question_count: int,
         question_count: 每种题型的数量（如果 adaptive=True，则作为建议数量）
         context: 教材内容上下文（用于检测是否包含代码）
         adaptive: 是否启用自适应模式（让 AI 自主决定数量和题型）
+        knowledge_context: 知识点上下文（包含核心概念、Bloom层级、前置知识点等）
         
     Returns:
         题型专用提示词字符串
     """
     prompt_parts = []
     
+    # 处理知识点上下文和 Bloom 层级
+    bloom_level = None
+    core_concept = None
+    prerequisites_context = []
+    
+    if knowledge_context:
+        bloom_level = knowledge_context.get("bloom_level")
+        core_concept = knowledge_context.get("core_concept")
+        prerequisites_context = knowledge_context.get("prerequisites_context", [])
+    
+    # 根据 Bloom 层级调整题型要求
+    bloom_type_requirements = []
+    if bloom_level and bloom_level >= 4:
+        # Level 4 以上（应用/分析/评价/创造），强制要求复杂题型
+        bloom_type_requirements.append("**重要**：检测到当前知识点属于 Bloom 认知层级 Level 4 以上（应用/分析/评价/创造），请务必包含以下题型：")
+        bloom_type_requirements.append("- 简答题：要求分析、比较或评价")
+        bloom_type_requirements.append("- 编程题：要求实现复杂算法或解决实际问题")
+        bloom_type_requirements.append("- 综合应用题：结合多个知识点的场景描述题")
+        bloom_type_requirements.append("避免生成过于简单的记忆性题目。")
+    
     # 自适应模式：让 AI 自主决定
     if adaptive or not question_types:
         prompt_parts.append("## 自适应出题要求：\n")
         prompt_parts.append("请根据提供的文本内容的复杂度和信息量，自主决定出题的数量（3-10题）和最合适的题型组合。\n")
+        
+        # 添加 Bloom 层级要求
+        if bloom_type_requirements:
+            prompt_parts.append("\n".join(bloom_type_requirements))
+            prompt_parts.append("\n")
         
         # 检测是否包含代码
         if context and detect_code_in_text(context):
@@ -403,9 +648,19 @@ def build_type_specific_prompt(question_types: List[str], question_count: int,
         if question_type in QUESTION_TYPE_PROMPTS:
             prompt_parts.append(QUESTION_TYPE_PROMPTS[question_type])
             prompt_parts.append(f"\n请生成 {question_count} 道{question_type}。")
+            
+            # 添加 Bloom 层级要求
+            if bloom_type_requirements:
+                prompt_parts.append("\n" + "\n".join(bloom_type_requirements))
     else:
         # 多种题型，列出每种题型的要求
         prompt_parts.append("## 题型要求：\n")
+        
+        # 添加 Bloom 层级要求
+        if bloom_type_requirements:
+            prompt_parts.append("\n".join(bloom_type_requirements))
+            prompt_parts.append("\n")
+        
         for q_type in question_types:
             if q_type in QUESTION_TYPE_PROMPTS:
                 prompt_parts.append(QUESTION_TYPE_PROMPTS[q_type])
@@ -458,7 +713,8 @@ class OpenRouterClient:
         batch_count: int,
         chapter_name: Optional[str] = None,
         on_status_update=None,
-        retry_count: int = 0
+        retry_count: int = 0,
+        chunks: Optional[List[Dict[str, Any]]] = None
     ) -> List[Dict[str, Any]]:
         """
         生成一批题目（内部方法，支持重试）
@@ -470,18 +726,42 @@ class OpenRouterClient:
             chapter_name: 章节名称（可选）
             on_status_update: 状态更新回调函数
             retry_count: 当前重试次数
+            chunks: 切片列表（用于获取知识点上下文）
             
         Returns:
             题目字典列表
         """
+        # 获取知识点上下文
+        knowledge_context = {}
+        if chunks:
+            knowledge_context = get_chunk_knowledge_context(chunks)
+        
         # 构建题型专用提示词（支持自适应模式）
         adaptive_mode = not batch_question_types or len(batch_question_types) == 0
         type_prompt = build_type_specific_prompt(
             batch_question_types if not adaptive_mode else [],
             batch_count,
             context=context,
-            adaptive=adaptive_mode
+            adaptive=adaptive_mode,
+            knowledge_context=knowledge_context if knowledge_context else None
         )
+        
+        # 构建前置知识点上下文提示
+        prerequisites_prompt = ""
+        core_concept = knowledge_context.get("core_concept")
+        prerequisites_context = knowledge_context.get("prerequisites_context", [])
+        
+        if prerequisites_context:
+            prerequisites_prompt = "\n## 前置知识点上下文：\n"
+            prerequisites_prompt += "以下是与当前知识点相关的前置依赖知识点，请在设计题目时结合这些前置知识，帮助学生建立知识之间的关联：\n\n"
+            for idx, prereq in enumerate(prerequisites_context, 1):
+                prereq_concept = prereq.get("concept", "")
+                prereq_summary = prereq.get("summary", "")
+                prereq_depth = prereq.get("depth", 0)
+                prerequisites_prompt += f"{idx}. **{prereq_concept}**（直接依赖，深度 {prereq_depth}）\n"
+                prerequisites_prompt += f"   {prereq_summary}\n\n"
+            prerequisites_prompt += "**重要**：在题目的解析（explain 字段）中，必须包含以下说明：\n"
+            prerequisites_prompt += f'"此题旨在通过[{", ".join([p.get("concept", "") for p in prerequisites_context[:2]])}]来深化对[{core_concept or "当前概念"}]的理解。"\n\n'
         
         # 构建用户提示词
         if adaptive_mode:
@@ -496,10 +776,15 @@ class OpenRouterClient:
         if chapter_name:
             user_prompt += f"**章节：{chapter_name}**\n\n"
         
+        if core_concept:
+            user_prompt += f"**核心概念：{core_concept}**\n\n"
+        
         user_prompt += f"""**教材内容：**
 ```markdown
 {context}
 ```
+
+{prerequisites_prompt}
 
 {type_prompt}
 
@@ -633,7 +918,7 @@ class OpenRouterClient:
                                 await asyncio.sleep(2)  # 等待2秒后重试
                                 return await self._generate_batch_stream(
                                     context, batch_question_types, batch_count,
-                                    chapter_name, on_status_update, retry_count + 1
+                                    chapter_name, on_status_update, retry_count + 1, chunks
                                 )
                             else:
                                 if on_status_update:
@@ -711,7 +996,7 @@ class OpenRouterClient:
                 await asyncio.sleep(3)  # 等待3秒后重试
                 return await self._generate_batch_stream(
                     context, batch_question_types, batch_count,
-                    chapter_name, on_status_update, retry_count + 1
+                    chapter_name, on_status_update, retry_count + 1, chunks
                 )
             else:
                 error_msg = f"请求超时（已重试{MAX_RETRIES}次）"
@@ -729,7 +1014,7 @@ class OpenRouterClient:
                 await asyncio.sleep(3)
                 return await self._generate_batch_stream(
                     context, batch_question_types, batch_count,
-                    chapter_name, on_status_update, retry_count + 1
+                    chapter_name, on_status_update, retry_count + 1, chunks
                 )
             error_msg = f"OpenRouter API 请求失败: HTTP {e.response.status_code}"
             if on_status_update:
@@ -746,7 +1031,7 @@ class OpenRouterClient:
                 await asyncio.sleep(3)
                 return await self._generate_batch_stream(
                     context, batch_question_types, batch_count,
-                    chapter_name, on_status_update, retry_count + 1
+                    chapter_name, on_status_update, retry_count + 1, chunks
                 )
             error_msg = f"OpenRouter API 请求错误: {str(e)}"
             if on_status_update:
@@ -764,7 +1049,8 @@ class OpenRouterClient:
         question_count: int = 5,
         question_types: Optional[List[str]] = None,
         chapter_name: Optional[str] = None,
-        on_status_update=None
+        on_status_update=None,
+        chunks: Optional[List[Dict[str, Any]]] = None
     ):
         """
         流式调用 OpenRouter API 生成题目（支持 Server-Sent Events）
@@ -799,7 +1085,7 @@ class OpenRouterClient:
             # 如果只有一种题型或题目数量很少，直接生成
             if len(question_types) == 1 or total_count <= 3:
                 return await self._generate_batch_stream(
-                    context, question_types, total_count, chapter_name, on_status_update
+                    context, question_types, total_count, chapter_name, on_status_update, 0, chunks
                 )
             
             # 否则按题型分批生成
@@ -808,7 +1094,7 @@ class OpenRouterClient:
                 if count > 0:
                     try:
                         batch_questions = await self._generate_batch_stream(
-                            context, [q_type], count, chapter_name, on_status_update
+                            context, [q_type], count, chapter_name, on_status_update, 0, chunks
                         )
                         all_questions.extend(batch_questions)
                     except Exception as e:
@@ -851,7 +1137,7 @@ class OpenRouterClient:
             
             try:
                 batch_questions = await self._generate_batch_stream(
-                    context, [batch_type], batch_count, chapter_name, on_status_update
+                    context, [batch_type], batch_count, chapter_name, on_status_update, 0, chunks
                 )
                 all_questions.extend(batch_questions)
                 
@@ -884,47 +1170,82 @@ class OpenRouterClient:
         batch_question_types: List[str],
         batch_count: int,
         chapter_name: Optional[str] = None,
-        retry_count: int = 0
+        retry_count: int = 0,
+        chunks: Optional[List[Dict[str, Any]]] = None
     ) -> List[Dict[str, Any]]:
         """
         生成一批题目（非流式，内部方法，支持重试）
         
         Args:
-            context: 教材内容上下文
+            context: 教材内容上下文（现在主要用于向后兼容，优先使用知识点）
             batch_question_types: 本批要生成的题型列表
             batch_count: 本批要生成的题目数量
             chapter_name: 章节名称（可选）
             retry_count: 当前重试次数
+            chunks: 切片列表（用于提取知识点）
             
         Returns:
             题目字典列表
         """
-        # 构建题型专用提示词（支持自适应模式）
+        # ========== 新的出题流程：基于知识点生成题目 ==========
+        # 1. 从前置 chunks 中提取知识点
+        knowledge_info = {}
+        if chunks:
+            knowledge_info = extract_knowledge_from_chunks(chunks)
+        
+        # 2. 构建基于知识点的提示词
+        knowledge_prompt = ""
+        if knowledge_info.get("core_concept"):
+            knowledge_prompt = build_knowledge_based_prompt(knowledge_info, chunks)
+        else:
+            # 如果没有知识点信息，回退到基于文本的方式（向后兼容）
+            knowledge_prompt = f"""## 教材内容：
+```markdown
+{context}
+```"""
+        
+        # 3. 构建题型专用提示词（支持自适应模式）
         adaptive_mode = not batch_question_types or len(batch_question_types) == 0
         type_prompt = build_type_specific_prompt(
             batch_question_types if not adaptive_mode else [],
             batch_count,
-            context=context,
-            adaptive=adaptive_mode
+            context=context if not knowledge_info.get("core_concept") else None,  # 如果有知识点，不传context
+            adaptive=adaptive_mode,
+            knowledge_context=knowledge_info if knowledge_info.get("core_concept") else None
         )
         
-        # 构建用户提示词
+        # 4. 构建连贯性说明
+        coherence_prompt = ""
+        core_concept = knowledge_info.get("core_concept")
+        prerequisites_context = knowledge_info.get("prerequisites_context", [])
+        
+        if prerequisites_context and core_concept:
+            prereq_names = [p.get("concept", "") for p in prerequisites_context[:2]]
+            coherence_prompt = f"\n## 连贯性要求：\n"
+            coherence_prompt += "**重要**：在每道题的解析（explain 字段）中，必须包含以下说明：\n"
+            coherence_prompt += f'\"此题旨在通过[{", ".join(prereq_names)}]来深化对[{core_concept}]的理解。\"\n'
+            coherence_prompt += "请确保题目能够体现知识点之间的关联，帮助学生建立完整的知识体系。\n\n"
+        
+        # 5. 构建用户提示词（基于知识点）
         if adaptive_mode:
-            user_prompt = f"""请根据以下教材内容，自主决定生成 3-10 道高质量的计算机科学习题。
+            user_prompt = f"""请根据以下知识点信息，自主决定生成 3-10 道高质量的计算机科学习题。
+
+**重要**：题目应基于知识点信息生成，而不是直接基于参考文本。请充分利用知识点摘要、前置依赖、易错点和应用场景等信息。
 
 """
         else:
-            user_prompt = f"""请根据以下教材内容，生成 {batch_count} 道高质量的计算机科学习题。
+            user_prompt = f"""请根据以下知识点信息，生成 {batch_count} 道高质量的计算机科学习题。
+
+**重要**：题目应基于知识点信息生成，而不是直接基于参考文本。请充分利用知识点摘要、前置依赖、易错点和应用场景等信息。
 
 """
         
         if chapter_name:
             user_prompt += f"**章节：{chapter_name}**\n\n"
         
-        user_prompt += f"""**教材内容：**
-```markdown
-{context}
-```
+        user_prompt += f"""{knowledge_prompt}
+
+{coherence_prompt}
 
 {type_prompt}
 
@@ -1024,7 +1345,7 @@ class OpenRouterClient:
                             await asyncio.sleep(2)
                             return await self._generate_batch(
                                 context, batch_question_types, batch_count,
-                                chapter_name, retry_count + 1
+                                chapter_name, retry_count + 1, chunks
                             )
                         else:
                             try:
@@ -1084,7 +1405,7 @@ class OpenRouterClient:
                 await asyncio.sleep(3)
                 return await self._generate_batch(
                     context, batch_question_types, batch_count,
-                    chapter_name, retry_count + 1
+                    chapter_name, retry_count + 1, chunks
                 )
             raise ValueError(f"请求超时（已重试{MAX_RETRIES}次）")
         except httpx.HTTPStatusError as e:
@@ -1094,7 +1415,7 @@ class OpenRouterClient:
                 await asyncio.sleep(3)
                 return await self._generate_batch(
                     context, batch_question_types, batch_count,
-                    chapter_name, retry_count + 1
+                    chapter_name, retry_count + 1, chunks
                 )
             error_msg = f"OpenRouter API 请求失败: HTTP {e.response.status_code}"
             if e.response.text:
@@ -1108,7 +1429,7 @@ class OpenRouterClient:
                 await asyncio.sleep(3)
                 return await self._generate_batch(
                     context, batch_question_types, batch_count,
-                    chapter_name, retry_count + 1
+                    chapter_name, retry_count + 1, chunks
                 )
             try:
                 error_msg = repr(e) if hasattr(e, '__repr__') else "网络请求错误"
@@ -1127,7 +1448,8 @@ class OpenRouterClient:
         context: str,
         question_count: int = 5,
         question_types: Optional[List[str]] = None,
-        chapter_name: Optional[str] = None
+        chapter_name: Optional[str] = None,
+        chunks: Optional[List[Dict[str, Any]]] = None
     ) -> List[Dict[str, Any]]:
         """
         调用 OpenRouter API 生成题目（支持分批生成，防止超时）
@@ -1160,7 +1482,7 @@ class OpenRouterClient:
             # 如果只有一种题型或题目数量很少，直接生成
             if len(question_types) == 1 or total_count <= 3:
                 return await self._generate_batch(
-                    context, question_types, total_count, chapter_name
+                    context, question_types, total_count, chapter_name, 0, chunks
                 )
             
             # 否则按题型分批生成
@@ -1169,7 +1491,7 @@ class OpenRouterClient:
                 if count > 0:
                     try:
                         batch_questions = await self._generate_batch(
-                            context, [q_type], count, chapter_name
+                            context, [q_type], count, chapter_name, 0, chunks
                         )
                         all_questions.extend(batch_questions)
                     except Exception as e:
@@ -1200,7 +1522,7 @@ class OpenRouterClient:
         for batch_type, batch_count in batches:
             try:
                 batch_questions = await self._generate_batch(
-                    context, [batch_type], batch_count, chapter_name
+                    context, [batch_type], batch_count, chapter_name, 0, chunks
                 )
                 all_questions.extend(batch_questions)
             except Exception as e:
@@ -1307,12 +1629,12 @@ async def generate_questions(
     chunks_per_request: int = 2
 ) -> QuestionList:
     """
-    根据教材切片生成题目
+    根据教材切片生成题目（基于知识点）
     
-    核心逻辑：
-    1. 随机抽取 1-2 个相关的切片（Chunks）作为上下文
-    2. 调用 OpenRouter API 生成题目
-    3. 确保生成的题目能对应到具体的章节标题
+    新的核心逻辑：
+    1. 从前置 chunks 中提取知识点（核心概念、前置依赖、Bloom层级等）
+    2. 基于知识点信息生成题目，而不是直接基于文本
+    3. 题目与知识点关联，而不是与chunks直接关联
     
     Args:
         chunks: 解析后的文本切片列表
@@ -1334,24 +1656,25 @@ async def generate_questions(
     # 确保每次请求使用的切片数量在合理范围内
     chunks_per_request = max(1, min(2, chunks_per_request))
     
-    # 随机选择切片
+    # 随机选择切片（用于提取知识点）
     selected_chunks = select_random_chunks(chunks, chunks_per_request)
-    
-    # 构建上下文
-    context = build_context_from_chunks(selected_chunks)
     
     # 提取章节名称
     chapter_name = get_chapter_name_from_chunks(selected_chunks)
     
+    # 构建上下文（仅作为参考，实际生成基于知识点）
+    context = build_context_from_chunks(selected_chunks)
+    
     # 创建 OpenRouter 客户端
     client = OpenRouterClient(api_key=api_key, model=model)
     
-    # 生成题目
+    # 生成题目（基于知识点，传入 chunks 用于提取知识点）
     questions_data = await client.generate_questions(
-        context=context,
+        context=context,  # 仅作为参考
         question_count=question_count,
         question_types=question_types,
-        chapter_name=chapter_name
+        chapter_name=chapter_name,
+        chunks=selected_chunks  # 用于提取知识点
     )
     
     # 为每个题目添加章节信息
@@ -1375,10 +1698,12 @@ async def generate_questions_for_chunk(
     model: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
-    为单个切片生成题目（使用自适应模式）
+    为单个切片生成题目（基于知识点，使用自适应模式）
     
-    根据切片内容的复杂度和信息量，让 AI 自主决定出题数量和题型组合。
-    如果切片包含代码，AI 会自动包含编程题或填空题。
+    新的逻辑：
+    1. 从 chunk 中提取知识点信息
+    2. 基于知识点生成题目，而不是直接基于文本
+    3. 根据知识点的 Bloom 层级和复杂度，让 AI 自主决定出题数量和题型组合
     
     Args:
         chunk: 单个切片，包含 content 和 metadata
@@ -1391,7 +1716,7 @@ async def generate_questions_for_chunk(
     if not chunk or not chunk.get("content"):
         return []
     
-    # 构建上下文（单个切片）
+    # 构建上下文（仅作为参考）
     context = chunk.get("content", "")
     metadata = chunk.get("metadata", {})
     
@@ -1402,14 +1727,17 @@ async def generate_questions_for_chunk(
     # 创建 OpenRouter 客户端
     client = OpenRouterClient(api_key=api_key, model=model)
     
-    # 使用自适应模式生成题目（不指定题型和数量，让 AI 自主决定）
+    # 使用自适应模式生成题目（基于知识点）
     # 调用 _generate_batch 方法，传入空的 question_types 列表启用自适应模式
-    # 使用建议数量 5，AI 会根据内容调整（3-10题）
+    # 使用建议数量 5，AI 会根据知识点复杂度调整（3-10题）
+    # 传入单个 chunk 的列表以提取知识点
     questions_data = await client._generate_batch(
-        context=context,
+        context=context,  # 仅作为参考
         batch_question_types=[],  # 空列表启用自适应模式
         batch_count=5,  # 作为建议数量
-        chapter_name=chapter_name
+        chapter_name=chapter_name,
+        retry_count=0,
+        chunks=[chunk]  # 用于提取知识点
     )
     
     # 为每个题目添加章节信息

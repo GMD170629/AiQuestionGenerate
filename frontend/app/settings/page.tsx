@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Settings, Save, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Settings, Save, AlertCircle, CheckCircle2, Trash2, Code, AlertTriangle } from 'lucide-react'
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -22,9 +22,12 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
+  const [devMode, setDevMode] = useState(false)
+  const [clearing, setClearing] = useState(false)
 
   useEffect(() => {
     fetchConfig()
+    checkDevMode()
   }, [])
 
   const fetchConfig = async () => {
@@ -41,6 +44,19 @@ export default function SettingsPage() {
       setMessage({ type: 'error', text: '获取配置失败：网络错误' })
     } finally {
       setLoading(false)
+    }
+  }
+
+  const checkDevMode = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/dev/status`)
+      if (response.ok) {
+        const data = await response.json()
+        setDevMode(data.dev_mode || false)
+      }
+    } catch (error) {
+      // 如果接口不存在，说明开发模式未启用
+      setDevMode(false)
     }
   }
 
@@ -69,6 +85,40 @@ export default function SettingsPage() {
       setMessage({ type: 'error', text: '保存配置失败：网络错误' })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleClearAll = async () => {
+    if (!confirm('⚠️ 警告：此操作将清空所有数据！\n\n包括：\n- 所有上传的文件\n- 所有教材\n- 所有题目\n- 所有切片\n- 所有知识图谱\n- 所有任务\n\n此操作不可恢复！确定要继续吗？')) {
+      return
+    }
+
+    try {
+      setClearing(true)
+      setMessage(null)
+      
+      const response = await fetch(`${API_BASE_URL}/dev/clear-all`, {
+        method: 'POST',
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setMessage({ 
+          type: 'success', 
+          text: `清空成功！已删除：${data.stats.files_deleted} 个文件，${data.stats.questions_deleted} 道题目，${data.stats.textbooks_deleted} 本教材等。` 
+        })
+        // 刷新页面以更新数据
+        setTimeout(() => {
+          window.location.reload()
+        }, 2000)
+      } else {
+        const error = await response.json()
+        setMessage({ type: 'error', text: error.detail || '清空数据失败' })
+      }
+    } catch (error) {
+      setMessage({ type: 'error', text: '清空数据失败：网络错误' })
+    } finally {
+      setClearing(false)
     }
   }
 
@@ -233,6 +283,65 @@ export default function SettingsPage() {
             <li>如果使用自定义 API 端点，请确保端点格式与 OpenRouter API 兼容</li>
           </ul>
         </motion.div>
+
+        {/* 开发模式部分 */}
+        {devMode && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3 }}
+            className="mt-6 bg-red-50 dark:bg-red-900/20 border-2 border-red-300 dark:border-red-700 rounded-xl p-6"
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <Code className="h-6 w-6 text-red-600 dark:text-red-400" />
+              <h3 className="text-lg font-semibold text-red-900 dark:text-red-100">
+                开发模式
+              </h3>
+            </div>
+            <p className="text-sm text-red-800 dark:text-red-200 mb-4">
+              开发模式已启用。以下操作将永久删除所有数据，请谨慎使用！
+            </p>
+            
+            <div className="bg-white dark:bg-slate-800 rounded-lg p-4 mb-4">
+              <h4 className="text-sm font-medium text-red-900 dark:text-red-100 mb-2">
+                清空所有数据将删除：
+              </h4>
+              <ul className="text-sm text-red-800 dark:text-red-200 list-disc list-inside space-y-1">
+                <li>所有上传的文件（uploads 目录）</li>
+                <li>所有教材（textbooks）</li>
+                <li>所有题目（questions）</li>
+                <li>所有文档切片（chunks）</li>
+                <li>所有章节（chapters）</li>
+                <li>所有知识点节点（knowledge_nodes）</li>
+                <li>所有任务（tasks）</li>
+                <li>所有文件元数据（file_metadata）</li>
+              </ul>
+              <p className="text-xs text-red-600 dark:text-red-400 mt-2">
+                注意：AI 配置（ai_config）不会被清空
+              </p>
+            </div>
+
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={handleClearAll}
+              disabled={clearing}
+              className="flex items-center gap-2 px-6 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {clearing ? (
+                <>
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                  <span>清空中...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-5 w-5" />
+                  <span>清空所有数据</span>
+                </>
+              )}
+            </motion.button>
+          </motion.div>
+        )}
       </div>
     </main>
   )

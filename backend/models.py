@@ -529,3 +529,73 @@ class ChapterTree(BaseModel):
             }
         }
 
+
+class KnowledgeNode(BaseModel):
+    """
+    知识点节点模型
+    用于存储从文档切片中提取的知识点语义信息
+    """
+    
+    node_id: Optional[str] = Field(
+        default=None,
+        description="节点 ID（数据库生成）"
+    )
+    
+    chunk_id: int = Field(
+        ...,
+        description="关联的切片 ID"
+    )
+    
+    file_id: str = Field(
+        ...,
+        description="所属文件 ID"
+    )
+    
+    core_concept: str = Field(
+        ...,
+        min_length=1,
+        description="核心概念（该切片的主要知识点）"
+    )
+    
+    prerequisites: List[str] = Field(
+        default_factory=list,
+        description="前置依赖知识点列表（学习该概念前需要掌握的知识点）"
+    )
+    
+    confusion_points: List[str] = Field(
+        default_factory=list,
+        description="学生易错点列表（学习该概念时容易混淆或出错的地方）"
+    )
+    
+    bloom_level: int = Field(
+        ...,
+        ge=1,
+        le=6,
+        description="Bloom 认知层级（1-6级）：1-记忆，2-理解，3-应用，4-分析，5-评价，6-创造"
+    )
+    
+    application_scenarios: Optional[List[str]] = Field(
+        default=None,
+        description="应用场景列表（可选，该知识点在实际中的应用场景）"
+    )
+    
+    created_at: Optional[str] = Field(
+        default=None,
+        description="创建时间（ISO 格式）"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "node_id": "node-123",
+                "chunk_id": 1,
+                "file_id": "file-456",
+                "core_concept": "死锁",
+                "prerequisites": ["进程同步", "资源竞争"],
+                "confusion_points": ["死锁与饥饿的区别", "如何判断是否发生死锁"],
+                "bloom_level": 3,
+                "application_scenarios": ["多线程编程", "数据库事务管理"],
+                "created_at": "2024-01-01T00:00:00"
+            }
+        }
+

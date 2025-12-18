@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { Upload, FileText, X, CheckCircle2, AlertCircle, Pause, Play, Trash2, RotateCw } from 'lucide-react'
+import { Upload, FileText, X, CheckCircle2, AlertCircle, Pause, Play, Trash2, RotateCw, Brain, Loader2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import { Progress } from '@/components/ui/progress'
@@ -32,6 +32,16 @@ interface FileUploadItem {
   result?: UploadResponse
   error?: string
   retryCount: number
+  // 知识提取进度
+  knowledgeExtraction?: {
+    status: 'not_started' | 'extracting' | 'completed' | 'failed'
+    current: number
+    total: number
+    progress: number
+    percentage: number
+    currentChunk?: string
+    message?: string
+  }
 }
 
 interface FileUploadProps {
@@ -156,10 +166,99 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
         xhr.abort()
       })
 
-      xhr.open('POST', 'http://localhost:8000/upload')
+      xhr.open('POST', 'http://localhost:8000/files/upload')
       xhr.send(formData)
     })
   }
+
+  // 开始监听知识提取进度
+  const startKnowledgeExtractionProgress = useCallback((fileId: string, itemId: string) => {
+    // 更新状态为提取中
+    setFileQueue(prev => {
+      const updated = prev.map(f => 
+        f.id === itemId 
+          ? { 
+              ...f, 
+              knowledgeExtraction: {
+                status: 'extracting' as const,
+                current: 0,
+                total: 0,
+                progress: 0,
+                percentage: 0
+              }
+            }
+          : f
+      )
+      fileQueueRef.current = updated
+      return updated
+    })
+
+    // 创建 EventSource 连接
+    const eventSource = new EventSource(`http://localhost:8000/knowledge-extraction/${fileId}/progress`)
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        
+        // 更新知识提取进度
+        setFileQueue(prev => {
+          const updated = prev.map(f => {
+            if (f.id === itemId) {
+              return {
+                ...f,
+                knowledgeExtraction: {
+                  status: data.status === 'completed' ? 'completed' as const : 
+                          data.status === 'failed' ? 'failed' as const : 'extracting' as const,
+                  current: data.current || 0,
+                  total: data.total || 0,
+                  progress: data.progress || 0,
+                  percentage: data.percentage || 0,
+                  currentChunk: data.current_chunk,
+                  message: data.message
+                }
+              }
+            }
+            return f
+          })
+          fileQueueRef.current = updated
+          return updated
+        })
+
+        // 如果完成或失败，关闭连接
+        if (data.status === 'completed' || data.status === 'failed') {
+          eventSource.close()
+        }
+      } catch (error) {
+        console.error('解析知识提取进度数据失败:', error)
+      }
+    }
+
+    eventSource.onerror = (error) => {
+      console.error('知识提取进度连接错误:', error)
+      eventSource.close()
+      
+      // 更新状态为失败
+      setFileQueue(prev => {
+        const updated = prev.map(f => 
+          f.id === itemId 
+            ? { 
+                ...f, 
+                knowledgeExtraction: {
+                  status: 'failed' as const,
+                  current: f.knowledgeExtraction?.current || 0,
+                  total: f.knowledgeExtraction?.total || 0,
+                  progress: f.knowledgeExtraction?.progress || 0,
+                  percentage: f.knowledgeExtraction?.percentage || 0,
+                  message: '连接错误'
+                }
+              }
+            : f
+        )
+        fileQueueRef.current = updated
+        return updated
+      })
+    }
+  }, [])
 
   const startUpload = useCallback(async () => {
     if (queueStatusRef.current === 'uploading') return
@@ -207,12 +306,29 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
         setFileQueue(prev => {
           const updated = prev.map(f => 
             f.id === pendingItem.id 
-              ? { ...f, status: 'success', progress: 100, result }
+              ? { 
+                  ...f, 
+                  status: 'success', 
+                  progress: 100, 
+                  result,
+                  knowledgeExtraction: {
+                    status: 'not_started' as const,
+                    current: 0,
+                    total: 0,
+                    progress: 0,
+                    percentage: 0
+                  }
+                }
               : f
           )
           fileQueueRef.current = updated
           return updated
         })
+
+        // 如果文件解析成功，开始监听知识提取进度
+        if (result.parsed && result.file_id) {
+          startKnowledgeExtractionProgress(result.file_id, pendingItem.id)
+        }
 
         if (onUploadSuccess) {
           onUploadSuccess()
@@ -241,7 +357,7 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
     }
 
     setCurrentUploadingIndex(null)
-  }, [onUploadSuccess])
+  }, [onUploadSuccess, startKnowledgeExtractionProgress])
 
   // 同步 startUpload 到 ref
   useEffect(() => {
@@ -540,10 +656,61 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
                       </span>
                     </div>
                     
-                    {/* 进度条 - 使用 Radix UI Progress 组件 */}
+                    {/* 上传进度条 - 使用 Radix UI Progress 组件 */}
                     {item.status === 'uploading' && (
                       <div className="w-full mb-2">
                         <Progress value={item.progress} className="h-2" />
+                      </div>
+                    )}
+
+                    {/* 知识提取进度 */}
+                    {item.status === 'success' && item.knowledgeExtraction && item.knowledgeExtraction.status !== 'not_started' && (
+                      <div className="w-full mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Brain className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                          <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                            知识图谱生成
+                          </span>
+                          {item.knowledgeExtraction.status === 'extracting' && (
+                            <Loader2 className="h-3 w-3 text-indigo-600 animate-spin" />
+                          )}
+                          {item.knowledgeExtraction.status === 'completed' && (
+                            <CheckCircle2 className="h-3 w-3 text-green-600" />
+                          )}
+                          {item.knowledgeExtraction.status === 'failed' && (
+                            <AlertCircle className="h-3 w-3 text-red-600" />
+                          )}
+                        </div>
+                        {item.knowledgeExtraction.total > 0 && (
+                          <>
+                            <div className="w-full mb-2">
+                              <Progress 
+                                value={item.knowledgeExtraction.percentage} 
+                                className="h-2" 
+                              />
+                            </div>
+                            <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
+                              <span>
+                                {item.knowledgeExtraction.currentChunk && (
+                                  <span className="truncate max-w-[200px]">
+                                    {item.knowledgeExtraction.currentChunk}
+                                  </span>
+                                )}
+                                {!item.knowledgeExtraction.currentChunk && item.knowledgeExtraction.message && (
+                                  <span>{item.knowledgeExtraction.message}</span>
+                                )}
+                              </span>
+                              <span className="ml-2">
+                                {item.knowledgeExtraction.current}/{item.knowledgeExtraction.total} ({Math.round(item.knowledgeExtraction.percentage)}%)
+                              </span>
+                            </div>
+                          </>
+                        )}
+                        {item.knowledgeExtraction.total === 0 && item.knowledgeExtraction.message && (
+                          <div className="text-xs text-slate-600 dark:text-slate-400">
+                            {item.knowledgeExtraction.message}
+                          </div>
+                        )}
                       </div>
                     )}
 

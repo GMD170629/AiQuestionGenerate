@@ -19,6 +19,7 @@ services:
       - PYTHONIOENCODING=utf-8
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - DEV_MODE=${DEV_MODE:-false}
     restart: unless-stopped
     networks:
       - app-network

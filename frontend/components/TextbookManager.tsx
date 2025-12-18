@@ -40,6 +40,7 @@ export default function TextbookManager() {
   const [selectedTextbook, setSelectedTextbook] = useState<Textbook | null>(null)
   const [allFiles, setAllFiles] = useState<FileInfo[]>([])
   const [formData, setFormData] = useState({ name: '', description: '' })
+  const [buildingDependencies, setBuildingDependencies] = useState(false)
 
   useEffect(() => {
     fetchTextbooks()
@@ -234,6 +235,32 @@ export default function TextbookManager() {
       await fetchTextbookDetail(textbookId)
     } catch (err) {
       alert(err instanceof Error ? err.message : '更新文件顺序失败')
+    }
+  }
+
+  const handleBuildDependencies = async (textbookId: string) => {
+    if (!confirm('确定要构建知识点依赖关系吗？这将使用 LLM 分析教材下所有知识点之间的依赖关系，可能需要一些时间。')) {
+      return
+    }
+
+    try {
+      setBuildingDependencies(true)
+      const response = await fetch(`http://localhost:8000/textbooks/${textbookId}/build-dependencies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || '构建依赖关系失败')
+      }
+
+      const result = await response.json()
+      alert(`依赖关系构建成功！\n共 ${result.total_concepts} 个知识点，成功构建 ${result.dependencies_built} 个依赖关系。`)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '构建依赖关系失败')
+    } finally {
+      setBuildingDependencies(false)
     }
   }
 
@@ -506,6 +533,15 @@ export default function TextbookManager() {
               <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
                 文件列表 ({selectedTextbook?.files?.length || 0})
               </h3>
+              <motion.button
+                onClick={() => handleBuildDependencies(selectedTextbook!.textbook_id)}
+                disabled={buildingDependencies || !selectedTextbook?.files || selectedTextbook.files.length === 0}
+                whileHover={{ scale: buildingDependencies ? 1 : 1.05 }}
+                whileTap={{ scale: buildingDependencies ? 1 : 0.95 }}
+                className="btn btn-primary btn-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {buildingDependencies ? '构建中...' : '构建知识点依赖关系'}
+              </motion.button>
             </div>
 
             {/* 已添加的文件列表 */}

@@ -12,11 +12,13 @@ services:
       # 确保数据库和上传文件目录持久化
       - ./backend/data:/app/data
       - ./backend/uploads:/app/uploads
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
-      - OPENROUTER_API_KEY=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
-      - OPENROUTER_MODEL=openai/gpt-4o-mini
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
     restart: unless-stopped
     networks:
       - app-network

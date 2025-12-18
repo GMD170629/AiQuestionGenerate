@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { BookOpen, Filter, Loader2, RefreshCw, FileText, Download, ChevronLeft, ChevronRight } from 'lucide-react'
+import { BookOpen, Filter, Loader2, RefreshCw, Download, ChevronLeft, ChevronRight } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { Question, QuestionType } from '@/types/question'
 import QuestionListComponent from './QuestionList'
@@ -14,9 +14,10 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
-interface FileInfo {
-  file_id: string
-  filename: string
+interface TextbookInfo {
+  textbook_id: string
+  name: string
+  description?: string
 }
 
 interface QuestionStatistics {
@@ -29,11 +30,11 @@ export default function QuestionLibrary() {
   const [questions, setQuestions] = useState<Question[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [files, setFiles] = useState<FileInfo[]>([])
+  const [textbooks, setTextbooks] = useState<TextbookInfo[]>([])
   const [statistics, setStatistics] = useState<QuestionStatistics | null>(null)
   
   // 筛选条件
-  const [selectedFileId, setSelectedFileId] = useState<string>('全部')
+  const [selectedTextbookId, setSelectedTextbookId] = useState<string>('全部')
   const [selectedType, setSelectedType] = useState<QuestionType | '全部'>('全部')
   
   // 分页状态
@@ -41,17 +42,17 @@ export default function QuestionLibrary() {
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
   
-  // 加载文件列表
-  const loadFiles = async () => {
+  // 加载教材列表
+  const loadTextbooks = async () => {
     try {
-      const response = await fetch('http://localhost:8000/files')
+      const response = await fetch('http://localhost:8000/textbooks')
       if (!response.ok) {
-        throw new Error('获取文件列表失败')
+        throw new Error('获取教材列表失败')
       }
       const data = await response.json()
-      setFiles(data)
+      setTextbooks(data)
     } catch (err) {
-      console.error('加载文件列表失败:', err)
+      console.error('加载教材列表失败:', err)
     }
   }
   
@@ -76,8 +77,8 @@ export default function QuestionLibrary() {
     
     try {
       const params = new URLSearchParams()
-      if (selectedFileId !== '全部') {
-        params.append('file_id', selectedFileId)
+      if (selectedTextbookId !== '全部') {
+        params.append('textbook_id', selectedTextbookId)
       }
       if (selectedType !== '全部') {
         params.append('question_type', selectedType)
@@ -104,18 +105,18 @@ export default function QuestionLibrary() {
     } finally {
       setLoading(false)
     }
-  }, [selectedFileId, selectedType, currentPage, pageSize])
+  }, [selectedTextbookId, selectedType, currentPage, pageSize])
   
   // 初始化加载
   useEffect(() => {
-    loadFiles()
+    loadTextbooks()
     loadStatistics()
   }, [])
   
   // 当筛选条件改变时重置到第一页并重新加载
   useEffect(() => {
     setCurrentPage(1)
-  }, [selectedFileId, selectedType])
+  }, [selectedTextbookId, selectedType])
   
   // 当分页或筛选条件改变时重新加载
   useEffect(() => {
@@ -190,8 +191,8 @@ export default function QuestionLibrary() {
                 // 获取所有符合筛选条件的题目（不分页）
                 try {
                   const params = new URLSearchParams()
-                  if (selectedFileId !== '全部') {
-                    params.append('file_id', selectedFileId)
+                  if (selectedTextbookId !== '全部') {
+                    params.append('textbook_id', selectedTextbookId)
                   }
                   if (selectedType !== '全部') {
                     params.append('question_type', selectedType)
@@ -213,10 +214,10 @@ export default function QuestionLibrary() {
                   
                   // 确定导出文件名
                   let filename = '题目库'
-                  if (selectedFileId !== '全部') {
-                    const selectedFile = files.find(f => f.file_id === selectedFileId)
-                    if (selectedFile) {
-                      filename = selectedFile.filename.replace(/\.md$/i, '')
+                  if (selectedTextbookId !== '全部') {
+                    const selectedTextbook = textbooks.find(t => t.textbook_id === selectedTextbookId)
+                    if (selectedTextbook) {
+                      filename = selectedTextbook.name
                     }
                   }
                   if (selectedType !== '全部') {
@@ -290,18 +291,18 @@ export default function QuestionLibrary() {
               <span className="text-base font-semibold text-slate-800 dark:text-slate-200">筛选：</span>
             </div>
             
-            {/* 文件筛选 */}
+            {/* 教材筛选 */}
             <div className="flex items-center gap-2 relative z-10">
-              <FileText className="h-5 w-5 text-slate-500" />
-              <Select value={selectedFileId} onValueChange={setSelectedFileId}>
+              <BookOpen className="h-5 w-5 text-slate-500" />
+              <Select value={selectedTextbookId} onValueChange={setSelectedTextbookId}>
                 <SelectTrigger className="min-w-[200px]">
-                  <SelectValue placeholder="选择文件" />
+                  <SelectValue placeholder="选择教材" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="全部">全部文件</SelectItem>
-                  {files.map((file) => (
-                    <SelectItem key={file.file_id} value={file.file_id}>
-                      {file.filename}
+                  <SelectItem value="全部">全部教材</SelectItem>
+                  {textbooks.map((textbook) => (
+                    <SelectItem key={textbook.textbook_id} value={textbook.textbook_id}>
+                      {textbook.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

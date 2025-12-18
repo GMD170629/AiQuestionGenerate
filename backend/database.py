@@ -553,14 +553,16 @@ class Database:
     
     def get_all_questions(self, file_id: Optional[str] = None, 
                           question_type: Optional[str] = None,
+                          textbook_id: Optional[str] = None,
                           limit: Optional[int] = None,
                           offset: int = 0) -> List[Dict[str, Any]]:
         """
-        获取题目列表（支持按文件和题型筛选）
+        获取题目列表（支持按文件、题型和教材筛选）
         
         Args:
             file_id: 文件 ID（可选，如果提供则只返回该文件的题目）
             question_type: 题型（可选，如果提供则只返回该题型的题目）
+            textbook_id: 教材 ID（可选，如果提供则只返回该教材的题目）
             limit: 限制返回数量（可选）
             offset: 偏移量（用于分页）
             
@@ -581,6 +583,10 @@ class Database:
             if question_type:
                 conditions.append("q.question_type = ?")
                 params.append(question_type)
+            
+            if textbook_id:
+                conditions.append("q.textbook_id = ?")
+                params.append(textbook_id)
             
             where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
             
@@ -649,13 +655,15 @@ class Database:
             return questions
     
     def get_question_count(self, file_id: Optional[str] = None, 
-                           question_type: Optional[str] = None) -> int:
+                           question_type: Optional[str] = None,
+                           textbook_id: Optional[str] = None) -> int:
         """
-        获取题目总数（支持按文件和题型筛选）
+        获取题目总数（支持按文件、题型和教材筛选）
         
         Args:
             file_id: 文件 ID（可选）
             question_type: 题型（可选）
+            textbook_id: 教材 ID（可选）
             
         Returns:
             题目总数
@@ -673,6 +681,10 @@ class Database:
             if question_type:
                 conditions.append("question_type = ?")
                 params.append(question_type)
+            
+            if textbook_id:
+                conditions.append("textbook_id = ?")
+                params.append(textbook_id)
             
             where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
             

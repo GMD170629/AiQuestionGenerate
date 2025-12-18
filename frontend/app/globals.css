@@ -1,0 +1,284 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* 学术深蓝 + 智能紫配色方案 */
+  --primary: 79, 70, 229; /* Indigo-600 #4F46E5 */
+  --accent: 139, 92, 246; /* Violet-500 #8B5CF6 */
+  
+  /* 背景色 */
+  --background: 248, 250, 252; /* Slate-50 */
+  --card-background: 255, 255, 255; /* White */
+  
+  /* 深色模式 */
+  --dark-background: 15, 23, 42; /* Slate-900 */
+  --dark-card-background: 30, 41, 59; /* Slate-800 */
+}
+
+.dark {
+  --background: var(--dark-background);
+  --card-background: var(--dark-card-background);
+}
+
+* {
+  @apply transition-colors duration-200;
+}
+
+body {
+  @apply bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+code, pre {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* 动画类已移至 Tailwind 配置 */
+
+/* 统一按钮样式 - 学术深蓝主题 */
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 
+           focus:outline-none focus:ring-2 focus:ring-offset-2 
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  
+  .btn-primary {
+    @apply bg-indigo-600 text-white hover:bg-indigo-700 
+           focus:ring-indigo-500 shadow-md hover:shadow-lg 
+           transform hover:-translate-y-0.5 active:translate-y-0;
+  }
+  
+  .btn-accent {
+    @apply bg-violet-500 text-white hover:bg-violet-600 
+           focus:ring-violet-500 shadow-md hover:shadow-lg 
+           transform hover:-translate-y-0.5 active:translate-y-0;
+  }
+  
+  .btn-secondary {
+    @apply bg-slate-500 text-white hover:bg-slate-600 
+           focus:ring-slate-500 shadow-md hover:shadow-lg 
+           transform hover:-translate-y-0.5 active:translate-y-0;
+  }
+  
+  .btn-success {
+    @apply bg-green-500 text-white hover:bg-green-600 
+           focus:ring-green-500 shadow-md hover:shadow-lg 
+           transform hover:-translate-y-0.5 active:translate-y-0;
+  }
+  
+  .btn-danger {
+    @apply bg-red-500 text-white hover:bg-red-600 
+           focus:ring-red-500 shadow-md hover:shadow-lg 
+           transform hover:-translate-y-0.5 active:translate-y-0;
+  }
+  
+  .btn-ghost {
+    @apply bg-transparent text-slate-700 dark:text-slate-300 
+           hover:bg-slate-100 dark:hover:bg-slate-700 
+           focus:ring-slate-500;
+  }
+  
+  /* 统一输入框样式 */
+  .input {
+    @apply w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 
+           rounded-lg bg-white dark:bg-slate-800 
+           text-slate-900 dark:text-slate-100 
+           placeholder-slate-400 dark:placeholder-slate-500
+           focus:ring-2 focus:ring-indigo-500 focus:border-transparent 
+           transition-all duration-200;
+  }
+  
+  /* 统一下拉框样式 */
+  .select {
+    @apply w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 
+           rounded-lg bg-white dark:bg-slate-800 
+           text-slate-900 dark:text-slate-100 
+           focus:ring-2 focus:ring-indigo-500 focus:border-transparent 
+           transition-all duration-200
+           cursor-pointer;
+  }
+  
+  /* 统一卡片样式 - 学术风格 */
+  .card {
+    @apply bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 
+           shadow-md hover:shadow-xl transition-all duration-300 
+           transform hover:-translate-y-1;
+  }
+  
+  /* 选中状态卡片 */
+  .card-selected {
+    @apply border-indigo-500 ring-2 ring-indigo-500 ring-opacity-50;
+  }
+  
+  /* 统一弹窗遮罩 */
+  .modal-overlay {
+    @apply fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm 
+           flex items-center justify-center z-50 p-4 
+           animate-fade-in;
+  }
+  
+  /* 统一弹窗容器 */
+  .modal-container {
+    @apply bg-white dark:bg-slate-800 rounded-2xl shadow-2xl 
+           max-w-4xl w-full max-h-[90vh] flex flex-col 
+           animate-scale-in;
+  }
+  
+  /* 统一标签样式 */
+  .badge {
+    @apply px-3 py-1 rounded-md text-sm font-semibold border;
+  }
+  
+  /* 统一提示框样式 */
+  .alert {
+    @apply p-4 rounded-lg border flex items-start gap-3 animate-fade-in;
+  }
+  
+  .alert-success {
+    @apply bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800;
+  }
+  
+  .alert-error {
+    @apply bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800;
+  }
+  
+  .alert-warning {
+    @apply bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800;
+  }
+  
+  .alert-info {
+    @apply bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800;
+  }
+  
+  /* 骨架屏样式 */
+  .skeleton {
+    @apply bg-slate-200 dark:bg-slate-700 rounded animate-pulse;
+  }
+  
+  /* 光效流转（Shimmer Effect） */
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.2) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    background-size: 1000px 100%;
+    animation: shimmer 2s linear infinite;
+  }
+  
+  /* AI 解析区域背景 */
+  .ai-explanation {
+    @apply bg-violet-50 dark:bg-violet-900/20 border-violet-200 dark:border-violet-800;
+  }
+}
+
+/* Collapsible 动画 */
+@keyframes collapsible-down {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+
+@keyframes collapsible-up {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
+.animate-collapsible-down {
+  animation: collapsible-down 0.2s ease-out;
+}
+
+.animate-collapsible-up {
+  animation: collapsible-up 0.2s ease-out;
+}
+
+/* 滚动条美化 - 学术风格 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-slate-100 dark:bg-slate-800;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 dark:bg-slate-600 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-indigo-400 dark:bg-indigo-500;
+}
+
+/* 选择文本样式 */
+::selection {
+  background-color: rgba(79, 70, 229, 0.2);
+  color: inherit;
+}
+
+/* 字体大小优化 */
+.text-xs {
+  font-size: 0.75rem; /* 12px */
+  line-height: 1.25rem; /* 20px */
+}
+
+.text-sm {
+  font-size: 0.875rem; /* 14px */
+  line-height: 1.5rem; /* 24px */
+}
+
+.text-base {
+  font-size: 1rem; /* 16px */
+  line-height: 1.75rem; /* 28px */
+}
+
+.text-lg {
+  font-size: 1.125rem; /* 18px */
+  line-height: 2rem; /* 32px */
+}
+
+.text-xl {
+  font-size: 1.25rem; /* 20px */
+  line-height: 2.25rem; /* 36px */
+}
+
+.text-2xl {
+  font-size: 1.5rem; /* 24px */
+  line-height: 2.5rem; /* 40px */
+}
+
+.text-3xl {
+  font-size: 1.875rem; /* 30px */
+  line-height: 1.25; /* tight */
+}
+
+.text-4xl {
+  font-size: 2.25rem; /* 36px */
+  line-height: 1.25; /* tight */
+}
+
+.text-5xl {
+  font-size: 3rem; /* 48px */
+  line-height: 1.25; /* tight */
+}
+

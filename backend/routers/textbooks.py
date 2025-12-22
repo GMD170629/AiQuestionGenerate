@@ -14,7 +14,6 @@ from schemas import (
     FileToTextbook,
     FileOrderUpdate
 )
-from md_processor import build_textbook_knowledge_dependencies
 
 router = APIRouter(prefix="/textbooks", tags=["教材管理"])
 
@@ -288,54 +287,4 @@ async def update_file_order(
         except (UnicodeEncodeError, UnicodeDecodeError):
             error_msg = "更新文件顺序失败"
         raise HTTPException(status_code=500, detail=f"更新文件顺序失败: {error_msg}")
-
-
-@router.post("/{textbook_id}/build-dependencies")
-async def build_knowledge_dependencies(textbook_id: str):
-    """
-    为教材下的所有知识点构建依赖关系
-    
-    使用 LLM 分析教材下所有知识点之间的依赖关系（prerequisites 和 dependents），
-    并将结果存储到数据库的 prerequisites_json 字段中。
-    
-    Args:
-        textbook_id: 教材 ID
-        
-    Returns:
-        构建结果，包含：
-        - success: 是否成功
-        - total_concepts: 知识点总数
-        - dependencies_built: 构建的依赖关系数量
-        - message: 结果消息
-    """
-    try:
-        # 检查教材是否存在
-        textbook = db.get_textbook(textbook_id)
-        if not textbook:
-            raise HTTPException(status_code=404, detail="教材不存在")
-        
-        # 调用依赖关系构建函数
-        result = await build_textbook_knowledge_dependencies(textbook_id)
-        
-        if not result.get("success"):
-            raise HTTPException(
-                status_code=400,
-                detail=result.get("message", "依赖关系构建失败")
-            )
-        
-        return JSONResponse(content={
-            "message": result.get("message", "依赖关系构建成功"),
-            "textbook_id": textbook_id,
-            "total_concepts": result.get("total_concepts", 0),
-            "dependencies_built": result.get("dependencies_built", 0)
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        try:
-            error_msg = repr(e) if hasattr(e, '__repr__') else "依赖关系构建失败"
-        except (UnicodeEncodeError, UnicodeDecodeError):
-            error_msg = "依赖关系构建失败"
-        raise HTTPException(status_code=500, detail=f"依赖关系构建失败: {error_msg}")
-
 

@@ -43,7 +43,6 @@ export default function TextbookManager() {
   const [selectedTextbook, setSelectedTextbook] = useState<Textbook | null>(null)
   const [allFiles, setAllFiles] = useState<FileInfo[]>([])
   const [formData, setFormData] = useState({ name: '', description: '' })
-  const [buildingDependencies, setBuildingDependencies] = useState(false)
 
   useEffect(() => {
     fetchTextbooks()
@@ -241,41 +240,6 @@ export default function TextbookManager() {
     }
   }
 
-  const handleBuildDependencies = async (textbookId: string) => {
-    if (!confirm('确定要重构知识点层级结构吗？这将使用 LLM 分析教材下所有知识点，按照计算机学科逻辑划分为三个层级（Level 1/2/3），并建立父子关系，可能需要一些时间。')) {
-      return
-    }
-
-    try {
-      setBuildingDependencies(true)
-      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/build-dependencies`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || '层级重构失败')
-      }
-
-      const result = await response.json()
-      const message = `层级重构成功！\n` +
-        `共 ${result.total_concepts} 个知识点\n` +
-        `Level 1（一级全局）: ${result.level_1_count} 个\n` +
-        `Level 2（二级章节）: ${result.level_2_count} 个\n` +
-        `Level 3（三级原子）: ${result.level_3_count} 个\n` +
-        `建立的父子关系: ${result.relationships_built} 个`
-      if (result.missing_concepts > 0) {
-        alert(message + `\n\n⚠ 警告：有 ${result.missing_concepts} 个知识点未被分类，已默认设置为 Level 3`)
-      } else {
-        alert(message)
-      }
-    } catch (err) {
-      alert(err instanceof Error ? err.message : '层级重构失败')
-    } finally {
-      setBuildingDependencies(false)
-    }
-  }
 
   const formatDate = (dateString: string): string => {
     const date = new Date(dateString)
@@ -530,7 +494,7 @@ export default function TextbookManager() {
 
       {/* 教材详情对话框 */}
       <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col p-0">
+        <DialogContent className="max-w-5xl max-h-[85vh] flex flex-col p-0 overflow-hidden">
           <DialogHeader className="p-5 border-b border-slate-200 dark:border-slate-700">
             <DialogTitle>{selectedTextbook?.name}</DialogTitle>
             {selectedTextbook?.description && (
@@ -538,71 +502,65 @@ export default function TextbookManager() {
             )}
           </DialogHeader>
           <div className="flex-1 overflow-auto p-5">
-            <div className="mb-4 flex items-center justify-between">
+            <div className="mb-4">
               <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
                 文件列表 ({selectedTextbook?.files?.length || 0})
               </h3>
-              <motion.button
-                onClick={() => handleBuildDependencies(selectedTextbook!.textbook_id)}
-                disabled={buildingDependencies || !selectedTextbook?.files || selectedTextbook.files.length === 0}
-                whileHover={{ scale: buildingDependencies ? 1 : 1.05 }}
-                whileTap={{ scale: buildingDependencies ? 1 : 0.95 }}
-                className="btn btn-primary btn-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {buildingDependencies ? '构建中...' : '构建知识点依赖关系'}
-              </motion.button>
             </div>
 
             {/* 已添加的文件列表 */}
             {selectedTextbook?.files && selectedTextbook.files.length > 0 && (
               <div className="space-y-2 mb-6">
-                {selectedTextbook.files.map((file, index) => (
-                  <motion.div
-                    key={file.file_id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="card p-4 flex items-center gap-3"
-                  >
-                    <div className="flex-1">
-                      <p className="font-medium text-slate-900 dark:text-slate-100">{file.filename}</p>
-                      <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400 mt-1">
-                        <span>{formatFileSize(file.file_size)}</span>
-                        <span>{formatDate(file.upload_time)}</span>
+                {(() => {
+                  const sortedFiles = [...selectedTextbook.files].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
+                  return sortedFiles.map((file, index) => (
+                    <motion.div
+                      key={file.file_id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="card p-4 flex items-center gap-3"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-slate-900 dark:text-slate-100 truncate">{file.filename}</p>
+                        <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400 mt-1">
+                          <span>{formatFileSize(file.file_size)}</span>
+                          <span>{formatDate(file.upload_time)}</span>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <motion.button
-                        onClick={() => handleMoveFile(selectedTextbook.textbook_id, file.file_id, 'up')}
-                        disabled={index === 0}
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        className="p-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="上移"
-                      >
-                        <ArrowUp className="h-4 w-4" />
-                      </motion.button>
-                      <motion.button
-                        onClick={() => handleMoveFile(selectedTextbook.textbook_id, file.file_id, 'down')}
-                        disabled={index === selectedTextbook.files!.length - 1}
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        className="p-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="下移"
-                      >
-                        <ArrowDown className="h-4 w-4" />
-                      </motion.button>
-                      <motion.button
-                        onClick={() => handleRemoveFile(selectedTextbook.textbook_id, file.file_id)}
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
-                        title="移除"
-                      >
-                        <X className="h-4 w-4" />
-                      </motion.button>
-                    </div>
-                  </motion.div>
-                ))}
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <motion.button
+                          onClick={() => handleMoveFile(selectedTextbook.textbook_id, file.file_id, 'up')}
+                          disabled={index === 0}
+                          whileHover={{ scale: 1.1 }}
+                          whileTap={{ scale: 0.9 }}
+                          className="p-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          title="上移"
+                        >
+                          <ArrowUp className="h-4 w-4" />
+                        </motion.button>
+                        <motion.button
+                          onClick={() => handleMoveFile(selectedTextbook.textbook_id, file.file_id, 'down')}
+                          disabled={index === sortedFiles.length - 1}
+                          whileHover={{ scale: 1.1 }}
+                          whileTap={{ scale: 0.9 }}
+                          className="p-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          title="下移"
+                        >
+                          <ArrowDown className="h-4 w-4" />
+                        </motion.button>
+                        <motion.button
+                          onClick={() => handleRemoveFile(selectedTextbook.textbook_id, file.file_id)}
+                          whileHover={{ scale: 1.1 }}
+                          whileTap={{ scale: 0.9 }}
+                          className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                          title="移除"
+                        >
+                          <X className="h-4 w-4" />
+                        </motion.button>
+                      </div>
+                    </motion.div>
+                  ))
+                })()}
               </div>
             )}
 
@@ -612,18 +570,19 @@ export default function TextbookManager() {
               {allFiles.filter(f => !selectedTextbook?.files?.some(tf => tf.file_id === f.file_id)).length === 0 ? (
                 <p className="text-slate-600 dark:text-slate-400 text-center py-8">没有可添加的文件</p>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-2 max-h-96 overflow-y-auto">
                   {allFiles
                     .filter(f => !selectedTextbook?.files?.some(tf => tf.file_id === f.file_id))
+                    .sort((a, b) => new Date(b.upload_time).getTime() - new Date(a.upload_time).getTime())
                     .map((file) => (
                       <motion.div
                         key={file.file_id}
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="card p-4 flex items-center justify-between"
+                        className="card p-4 flex items-center justify-between gap-3"
                       >
-                        <div className="flex-1">
-                          <p className="font-medium text-slate-900 dark:text-slate-100">{file.filename}</p>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-slate-900 dark:text-slate-100 truncate">{file.filename}</p>
                           <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400 mt-1">
                             <span>{formatFileSize(file.file_size)}</span>
                             <span>{formatDate(file.upload_time)}</span>
@@ -633,7 +592,7 @@ export default function TextbookManager() {
                           onClick={() => handleAddFile(selectedTextbook!.textbook_id, file.file_id)}
                           whileHover={{ scale: 1.05 }}
                           whileTap={{ scale: 0.95 }}
-                          className="btn btn-primary btn-sm"
+                          className="btn btn-primary btn-sm flex-shrink-0"
                         >
                           添加
                         </motion.button>

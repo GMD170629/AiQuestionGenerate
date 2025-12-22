@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { getApiUrl } from '@/lib/api'
 
 interface Textbook {
   textbook_id: string
@@ -53,7 +54,7 @@ export default function TextbookManager() {
     try {
       setLoading(true)
       setError(null)
-      const response = await fetch('http://localhost:8000/textbooks')
+      const response = await fetch(getApiUrl('/textbooks'))
       if (!response.ok) {
         throw new Error('获取教材列表失败')
       }
@@ -68,7 +69,7 @@ export default function TextbookManager() {
 
   const fetchAllFiles = async () => {
     try {
-      const response = await fetch('http://localhost:8000/files')
+      const response = await fetch(getApiUrl('/files'))
       if (response.ok) {
         const data = await response.json()
         setAllFiles(data)
@@ -80,7 +81,7 @@ export default function TextbookManager() {
 
   const fetchTextbookDetail = async (textbookId: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/textbooks/${textbookId}`)
+      const response = await fetch(getApiUrl(`/textbooks/${textbookId}`))
       if (!response.ok) {
         throw new Error('获取教材详情失败')
       }
@@ -98,7 +99,7 @@ export default function TextbookManager() {
     }
 
     try {
-      const response = await fetch('http://localhost:8000/textbooks', {
+      const response = await fetch(getApiUrl('/textbooks'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
@@ -124,7 +125,7 @@ export default function TextbookManager() {
     }
 
     try {
-      const response = await fetch(`http://localhost:8000/textbooks/${editingTextbook.textbook_id}`, {
+      const response = await fetch(getApiUrl(`/textbooks/${editingTextbook.textbook_id}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
@@ -153,7 +154,7 @@ export default function TextbookManager() {
     }
 
     try {
-      const response = await fetch(`http://localhost:8000/textbooks/${textbook.textbook_id}`, {
+      const response = await fetch(getApiUrl(`/textbooks/${textbook.textbook_id}`), {
         method: 'DELETE',
       })
 
@@ -174,7 +175,7 @@ export default function TextbookManager() {
 
   const handleAddFile = async (textbookId: string, fileId: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/textbooks/${textbookId}/files`, {
+      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/files`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fileId, display_order: 0 }),
@@ -198,7 +199,7 @@ export default function TextbookManager() {
     }
 
     try {
-      const response = await fetch(`http://localhost:8000/textbooks/${textbookId}/files/${fileId}`, {
+      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/files/${fileId}`), {
         method: 'DELETE',
       })
 
@@ -224,7 +225,7 @@ export default function TextbookManager() {
     if (newIndex < 0 || newIndex >= selectedTextbook.files.length) return
 
     try {
-      const response = await fetch(`http://localhost:8000/textbooks/${textbookId}/files/${fileId}/order`, {
+      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/files/${fileId}/order`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ display_order: newIndex }),
@@ -247,7 +248,7 @@ export default function TextbookManager() {
 
     try {
       setBuildingDependencies(true)
-      const response = await fetch(`http://localhost:8000/textbooks/${textbookId}/build-dependencies`, {
+      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/build-dependencies`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })

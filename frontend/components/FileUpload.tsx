@@ -5,6 +5,7 @@ import { Upload, FileText, X, CheckCircle2, AlertCircle, Pause, Play, Trash2, Ro
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import { Progress } from '@/components/ui/progress'
+import { getApiUrl } from '@/lib/api'
 
 interface UploadResponse {
   message: string
@@ -166,7 +167,7 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
         xhr.abort()
       })
 
-      xhr.open('POST', 'http://localhost:8000/files/upload')
+      xhr.open('POST', getApiUrl('/files/upload'))
       xhr.send(formData)
     })
   }
@@ -194,7 +195,7 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
     })
 
     // 创建 EventSource 连接
-    const eventSource = new EventSource(`http://localhost:8000/knowledge-extraction/${fileId}/progress`)
+    const eventSource = new EventSource(getApiUrl(`/knowledge-extraction/${fileId}/progress`))
 
     eventSource.onmessage = (event) => {
       try {

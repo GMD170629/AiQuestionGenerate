@@ -6,6 +6,7 @@ import { Sparkles, Loader2, AlertCircle, CheckCircle2, ArrowLeft, Clock, FileTex
 import { motion, AnimatePresence } from 'framer-motion'
 import { QuestionList, Question } from '@/types/question'
 import QuestionCard from '@/components/QuestionCard'
+import { getApiUrl } from '@/lib/api'
 
 interface GenerationConfig {
   file_id: string
@@ -114,7 +115,7 @@ export default function GeneratePage() {
         chapter: config.chapter === 'all' || !config.chapter ? undefined : config.chapter,
       }
 
-      const response = await fetch('http://localhost:8000/generate/stream', {
+      const response = await fetch(getApiUrl('/generate/stream'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

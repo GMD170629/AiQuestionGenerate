@@ -3,8 +3,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Settings, Save, AlertCircle, CheckCircle2, Trash2, Code, AlertTriangle } from 'lucide-react'
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { API_BASE_URL } from '@/lib/api'
 
 interface AIConfig {
   api_endpoint: string

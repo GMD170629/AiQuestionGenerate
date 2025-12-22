@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { BookOpen, Play, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Pause, PlayCircle, X } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { getApiUrl } from '@/lib/api'
 import {
   Select,
   SelectContent,
@@ -49,7 +50,7 @@ export default function TasksPage() {
 
   const fetchTextbooks = async () => {
     try {
-      const response = await fetch('http://localhost:8000/textbooks')
+      const response = await fetch(getApiUrl('/textbooks'))
       if (!response.ok) {
         throw new Error('获取教材列表失败')
       }
@@ -64,7 +65,7 @@ export default function TasksPage() {
   const fetchTasks = useCallback(async () => {
     try {
       setLoading(true)
-      const response = await fetch('http://localhost:8000/tasks')
+      const response = await fetch(getApiUrl('/tasks'))
       if (!response.ok) {
         throw new Error('获取任务列表失败')
       }
@@ -87,7 +88,7 @@ export default function TasksPage() {
     try {
       setCreating(true)
       setError(null)
-      const response = await fetch('http://localhost:8000/tasks/generate-book', {
+      const response = await fetch(getApiUrl('/tasks/generate-book'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ textbook_id: selectedTextbookId }),

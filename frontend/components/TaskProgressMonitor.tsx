@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Loader2, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { getApiUrl } from '@/lib/api'
 
 interface TaskProgress {
   progress: number
@@ -42,7 +43,7 @@ export default function TaskProgressMonitor({
       }
 
       const eventSource = new EventSource(
-        `http://localhost:8000/tasks/${taskId}/progress`
+        getApiUrl(`/tasks/${taskId}/progress`)
       )
       eventSourceRef.current = eventSource
 

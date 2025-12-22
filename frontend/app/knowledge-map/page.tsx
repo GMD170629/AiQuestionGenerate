@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import KnowledgeMap from '@/components/KnowledgeMap'
 import { BookOpen, FileText, RefreshCw } from 'lucide-react'
+import { getApiUrl } from '@/lib/api'
 import {
   Select,
   SelectContent,
@@ -34,14 +35,14 @@ export default function KnowledgeMapPage() {
     const fetchData = async () => {
       try {
         // 获取教材列表
-        const textbooksResponse = await fetch('http://localhost:8000/textbooks')
+        const textbooksResponse = await fetch(getApiUrl('/textbooks'))
         if (textbooksResponse.ok) {
           const textbooksData = await textbooksResponse.json()
           setTextbooks(textbooksData)
         }
 
         // 获取文件列表
-        const filesResponse = await fetch('http://localhost:8000/files')
+        const filesResponse = await fetch(getApiUrl('/files'))
         if (filesResponse.ok) {
           const filesData = await filesResponse.json()
           setFiles(filesData)

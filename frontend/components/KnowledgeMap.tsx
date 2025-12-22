@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { getApiUrl } from '@/lib/api'
 
 interface Node {
   id: string
@@ -61,7 +62,7 @@ export default function KnowledgeMap({ fileId, textbookId, onNodeClick }: Knowle
         if (textbookId) params.append('textbook_id', textbookId)
         params.append('max_nodes', '100')
         
-        const response = await fetch(`http://localhost:8000/knowledge-graph/graph-data?${params}`)
+        const response = await fetch(getApiUrl(`/knowledge-graph/graph-data?${params}`))
         
         if (!response.ok) {
           const errorText = await response.text()

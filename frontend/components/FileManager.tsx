@@ -8,6 +8,7 @@ import QuestionGenerator from './QuestionGenerator'
 import QuestionManager from './QuestionManager'
 import ChunkViewer from './ChunkViewer'
 import { QuestionList } from '@/types/question'
+import { getApiUrl } from '@/lib/api'
 import {
   Dialog,
   DialogContent,
@@ -64,7 +65,7 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
     try {
       setLoading(true)
       setError(null)
-      const response = await fetch('http://localhost:8000/files')
+      const response = await fetch(getApiUrl('/files'))
       if (!response.ok) {
         throw new Error('获取文件列表失败')
       }
@@ -89,7 +90,7 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
 
   const fetchTextbooks = async () => {
     try {
-      const response = await fetch('http://localhost:8000/textbooks')
+      const response = await fetch(getApiUrl('/textbooks'))
       if (response.ok) {
         const data = await response.json()
         setAllTextbooks(data)
@@ -101,7 +102,7 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
 
   const handleAddToTextbook = async (fileId: string, textbookId: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/textbooks/${textbookId}/files`, {
+      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/files`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fileId, display_order: 0 }),
@@ -122,7 +123,7 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
 
   const handlePreview = async (fileId: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/files/${fileId}`)
+      const response = await fetch(getApiUrl(`/files/${fileId}`))
       if (!response.ok) {
         throw new Error('获取文件内容失败')
       }
@@ -140,7 +141,7 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
 
     try {
       setDeletingId(fileId)
-      const response = await fetch(`http://localhost:8000/files/${fileId}`, {
+      const response = await fetch(getApiUrl(`/files/${fileId}`), {
         method: 'DELETE',
       })
       if (!response.ok) {

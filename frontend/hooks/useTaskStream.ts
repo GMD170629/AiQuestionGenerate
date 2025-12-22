@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { getApiUrl } from '@/lib/api'
 
 export interface TaskProgressData {
   progress: number
@@ -92,7 +93,7 @@ export function useTaskStream({
       // 使用浏览器原生 EventSource 建立 SSE 长连接
       // 这是长连接，不是循环请求，服务器会主动推送进度更新
       const eventSource = new EventSource(
-        `http://localhost:8000/tasks/${taskId}/progress`
+        getApiUrl(`/tasks/${taskId}/progress`)
       )
       eventSourceRef.current = eventSource
 

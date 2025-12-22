@@ -6,6 +6,7 @@ import { motion } from 'framer-motion'
 import { Question, QuestionType } from '@/types/question'
 import QuestionListComponent from './QuestionList'
 import { exportAndDownload } from '@/utils/export'
+import { getApiUrl } from '@/lib/api'
 import {
   Select,
   SelectContent,
@@ -45,7 +46,7 @@ export default function QuestionLibrary() {
   // 加载教材列表
   const loadTextbooks = async () => {
     try {
-      const response = await fetch('http://localhost:8000/textbooks')
+      const response = await fetch(getApiUrl('/textbooks'))
       if (!response.ok) {
         throw new Error('获取教材列表失败')
       }
@@ -59,7 +60,7 @@ export default function QuestionLibrary() {
   // 加载统计信息
   const loadStatistics = async () => {
     try {
-      const response = await fetch('http://localhost:8000/questions/statistics')
+      const response = await fetch(getApiUrl('/questions/statistics'))
       if (!response.ok) {
         throw new Error('获取统计信息失败')
       }
@@ -89,7 +90,7 @@ export default function QuestionLibrary() {
       params.append('limit', pageSize.toString())
       params.append('offset', offset.toString())
       
-      const response = await fetch(`http://localhost:8000/questions?${params.toString()}`)
+      const response = await fetch(getApiUrl(`/questions?${params.toString()}`))
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
         throw new Error(errorData.detail || '获取题目列表失败')
@@ -199,7 +200,7 @@ export default function QuestionLibrary() {
                   }
                   // 不设置 limit，获取所有题目
                   
-                  const response = await fetch(`http://localhost:8000/questions?${params.toString()}`)
+                  const response = await fetch(getApiUrl(`/questions?${params.toString()}`))
                   if (!response.ok) {
                     throw new Error('获取题目列表失败')
                   }

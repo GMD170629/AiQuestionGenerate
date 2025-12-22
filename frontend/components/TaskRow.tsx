@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronUp, Clock, Loader2, CheckCircle2, XCircle, FileText, Pause, PlayCircle, X } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
 import { useTaskStream } from '@/hooks/useTaskStream'
+import { getApiUrl } from '@/lib/api'
 
 interface Task {
   task_id: string
@@ -54,7 +55,7 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
     
     try {
       setIsOperating(true)
-      const response = await fetch(`http://localhost:8000/tasks/${task.task_id}/pause`, {
+      const response = await fetch(getApiUrl(`/tasks/${task.task_id}/pause`), {
         method: 'POST',
       })
       
@@ -79,7 +80,7 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
     
     try {
       setIsOperating(true)
-      const response = await fetch(`http://localhost:8000/tasks/${task.task_id}/resume`, {
+      const response = await fetch(getApiUrl(`/tasks/${task.task_id}/resume`), {
         method: 'POST',
       })
       
@@ -108,7 +109,7 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
     
     try {
       setIsOperating(true)
-      const response = await fetch(`http://localhost:8000/tasks/${task.task_id}/cancel`, {
+      const response = await fetch(getApiUrl(`/tasks/${task.task_id}/cancel`), {
         method: 'POST',
       })
       

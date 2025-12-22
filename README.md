@@ -119,19 +119,32 @@ npm run dev
 
 ### 环境变量
 
-创建 `.env` 文件（如果需要）：
+创建 `.env` 文件（在项目根目录）：
 
 ```env
-# 后端
+# 后端配置
 BACKEND_PORT=8000
 
-# 前端
+# 前端配置
+# Next.js 需要在环境变量前加 NEXT_PUBLIC_ 前缀才能在客户端使用
 NEXT_PUBLIC_API_URL=http://localhost:8000
+
+# Docker Compose 使用的环境变量（不需要 NEXT_PUBLIC_ 前缀）
+API_URL=http://localhost:8000
+
+# OpenRouter API 配置（可选，也可以通过前端设置页面配置）
+OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_MODEL=openai/gpt-4o-mini
 
 # 开发模式（可选）
 # 启用后将提供开发工具，包括快速清空所有数据的功能
-DEV_MODE=true
+DEV_MODE=false
 ```
+
+**重要提示：**
+- 如果使用 Docker Compose，`API_URL` 会被自动转换为 `NEXT_PUBLIC_API_URL` 传递给前端容器
+- 如果直接运行前端（不使用 Docker），需要在 `.env.local` 或 `.env` 文件中设置 `NEXT_PUBLIC_API_URL`
+- 前端代码已统一使用 `@/lib/api` 中的 `getApiUrl()` 函数，会自动读取环境变量
 
 ### 开发模式
 

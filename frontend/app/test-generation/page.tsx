@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { FlaskConical, Loader2, ChevronDown, ChevronUp, Code, FileText, Brain, MessageSquare, Network, Activity, Database } from 'lucide-react'
+import { getApiUrl } from '@/lib/api'
 import {
   Select,
   SelectContent,
@@ -138,7 +139,7 @@ export default function TestGenerationPage() {
 
   // 获取教材列表
   useEffect(() => {
-    fetch('http://localhost:8000/textbooks')
+      fetch(getApiUrl('/textbooks'))
       .then(res => res.json())
       .then(data => {
         setTextbooks(data)
@@ -149,7 +150,7 @@ export default function TestGenerationPage() {
   // 当选择教材时，获取文件列表
   useEffect(() => {
     if (selectedTextbookId) {
-      fetch(`http://localhost:8000/textbooks/${selectedTextbookId}`)
+      fetch(getApiUrl(`/textbooks/${selectedTextbookId}`))
         .then(res => res.json())
         .then(data => {
           setFiles(data.files || [])
@@ -160,7 +161,7 @@ export default function TestGenerationPage() {
         .catch(err => console.error('获取文件列表失败:', err))
     } else {
       // 如果没有选择教材，获取所有文件
-      fetch('http://localhost:8000/files')
+      fetch(getApiUrl('/files'))
         .then(res => res.json())
         .then(data => {
           setFiles(data)
@@ -172,7 +173,7 @@ export default function TestGenerationPage() {
   // 当选择文件时，获取切片列表
   useEffect(() => {
     if (selectedFileId) {
-      fetch(`http://localhost:8000/test-generation/chunks/${selectedFileId}`)
+      fetch(getApiUrl(`/test-generation/chunks/${selectedFileId}`))
         .then(res => res.json())
         .then(data => {
           setChunks(data.chunks || [])
@@ -194,7 +195,7 @@ export default function TestGenerationPage() {
     setTestResult(null)
 
     try {
-      const response = await fetch('http://localhost:8000/test-generation/test', {
+      const response = await fetch(getApiUrl('/test-generation/test'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

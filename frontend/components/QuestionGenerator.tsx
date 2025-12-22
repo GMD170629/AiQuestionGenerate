@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Sparkles, Loader2, AlertCircle, CheckCircle2, X } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { QuestionList } from '@/types/question'
+import { getApiUrl } from '@/lib/api'
 import {
   Select,
   SelectContent,
@@ -82,7 +83,7 @@ export default function QuestionGenerator({ file, onGenerateSuccess, onClose }: 
     setLoadingInfo(true)
     setError(null)
     try {
-      const response = await fetch(`http://localhost:8000/files/${file.file_id}/info`)
+      const response = await fetch(getApiUrl(`/files/${file.file_id}/info`))
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
         throw new Error(errorData.detail || '获取文件信息失败')

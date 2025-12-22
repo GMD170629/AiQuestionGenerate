@@ -66,6 +66,15 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
   const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
 
   const validateFile = (file: File): string | null => {
+    // 防御性检查：确保 file 和 file.name 存在
+    if (!file) {
+      return '文件对象无效'
+    }
+    
+    if (!file.name) {
+      return '文件名无效'
+    }
+    
     const fileName = file.name.toLowerCase()
     if (!fileName.endsWith('.md') && !fileName.endsWith('.markdown')) {
       return '仅支持 Markdown 文件（.md 或 .markdown）'

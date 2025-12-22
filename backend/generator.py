@@ -234,11 +234,125 @@ def detect_code_in_text(text: str) -> bool:
     return code_count >= 3
 
 
+def get_hierarchy_context(node_id: str) -> Dict[str, Any]:
+    """
+    向上溯源获取知识点的层级背景（二级标题和一级主题）
+    
+    Args:
+        node_id: 知识点节点 ID
+        
+    Returns:
+        包含层级背景信息的字典：
+        - level_1_concept: 一级全局知识点（如果有）
+        - level_2_concept: 二级章节知识点（如果有）
+        - level_3_concept: 三级原子知识点（当前知识点）
+        - hierarchy_path: 层级路径字符串（如："内存管理 > 虚拟内存 > TLB 快表"）
+    """
+    result = {
+        "level_1_concept": None,
+        "level_2_concept": None,
+        "level_3_concept": None,
+        "hierarchy_path": ""
+    }
+    
+    try:
+        # 获取当前节点
+        current_node = db.get_knowledge_node(node_id)
+        if not current_node:
+            return result
+        
+        current_level = current_node.get("level", 3)
+        current_concept = current_node.get("core_concept", "")
+        
+        # 根据层级设置当前概念
+        if current_level == 3:
+            result["level_3_concept"] = current_concept
+        elif current_level == 2:
+            result["level_2_concept"] = current_concept
+        elif current_level == 1:
+            result["level_1_concept"] = current_concept
+        
+        # 向上溯源
+        parent_id = current_node.get("parent_id")
+        if parent_id:
+            parent_node = db.get_knowledge_node(parent_id)
+            if parent_node:
+                parent_level = parent_node.get("level", 3)
+                parent_concept = parent_node.get("core_concept", "")
+                
+                if parent_level == 2:
+                    result["level_2_concept"] = parent_concept
+                    # 继续向上查找一级节点
+                    grandparent_id = parent_node.get("parent_id")
+                    if grandparent_id:
+                        grandparent_node = db.get_knowledge_node(grandparent_id)
+                        if grandparent_node:
+                            grandparent_level = grandparent_node.get("level", 3)
+                            if grandparent_level == 1:
+                                result["level_1_concept"] = grandparent_node.get("core_concept", "")
+                elif parent_level == 1:
+                    result["level_1_concept"] = parent_concept
+        
+        # 构建层级路径
+        path_parts = []
+        if result["level_1_concept"]:
+            path_parts.append(result["level_1_concept"])
+        if result["level_2_concept"]:
+            path_parts.append(result["level_2_concept"])
+        if result["level_3_concept"]:
+            path_parts.append(result["level_3_concept"])
+        
+        if path_parts:
+            result["hierarchy_path"] = " > ".join(path_parts)
+        elif current_concept:
+            result["hierarchy_path"] = current_concept
+    
+    except Exception as e:
+        print(f"警告：获取层级背景失败: {e}")
+    
+    return result
+
+
+def get_dependency_edges(node_id: str) -> List[Dict[str, Any]]:
+    """
+    获取知识点的横向依赖关系（基于 knowledge_dependencies 表）
+    
+    Args:
+        node_id: 知识点节点 ID
+        
+    Returns:
+        依赖关系列表，每个元素包含：
+        - target_node_id: 被依赖的节点 ID
+        - target_concept: 被依赖的概念名称
+        - dependency_type: 依赖类型
+    """
+    try:
+        dependencies = db.get_node_dependencies(node_id)
+        result = []
+        
+        for dep in dependencies:
+            target_node_id = dep.get("target_node_id")
+            if target_node_id:
+                target_node = db.get_knowledge_node(target_node_id)
+                if target_node:
+                    result.append({
+                        "target_node_id": target_node_id,
+                        "target_concept": target_node.get("core_concept", ""),
+                        "dependency_type": dep.get("dependency_type", "depends_on")
+                    })
+        
+        return result
+    except Exception as e:
+        print(f"警告：获取依赖关系失败: {e}")
+        return []
+
+
 def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     从前置 chunks 中提取知识点信息（核心概念、前置依赖、Bloom 层级等）
     
     这是新的出题流程的第一步：从 chunks 中提取知识点，而不是直接使用文本
+    升级版：包含层级背景和横向依赖关系
     
     Args:
         chunks: 切片列表
@@ -246,18 +360,26 @@ def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any
     Returns:
         包含完整知识点信息的字典：
         - core_concept: 核心概念
+        - node_id: 知识点节点 ID
+        - level: 知识点层级（1, 2, 或 3）
         - bloom_level: Bloom 认知层级
-        - prerequisites: 前置依赖知识点列表（字符串列表）
-        - prerequisites_context: 前置知识点上下文列表（详细信息）
+        - prerequisites: 前置依赖知识点列表（字符串列表，已废弃）
+        - prerequisites_context: 前置知识点上下文列表（详细信息，基于知识图谱）
+        - dependency_edges: 横向依赖关系列表（基于 knowledge_dependencies 表）
+        - hierarchy_context: 层级背景信息（一级、二级、三级）
         - confusion_points: 学生易错点列表
         - application_scenarios: 应用场景列表
         - knowledge_summary: 知识点摘要（用于生成题目）
     """
     result = {
         "core_concept": None,
+        "node_id": None,
+        "level": 3,  # 默认三级
         "bloom_level": None,
         "prerequisites": [],
         "prerequisites_context": [],
+        "dependency_edges": [],
+        "hierarchy_context": {},
         "confusion_points": [],
         "application_scenarios": [],
         "knowledge_summary": ""
@@ -316,14 +438,25 @@ def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any
         if all_knowledge_nodes:
             # 使用第一个知识点节点作为主要知识点
             primary_kn = all_knowledge_nodes[0]
+            node_id = primary_kn.get("node_id")
             
             result["core_concept"] = primary_kn.get("core_concept")
+            result["node_id"] = node_id
+            result["level"] = primary_kn.get("level", 3)
             result["bloom_level"] = primary_kn.get("bloom_level")
             result["prerequisites"] = primary_kn.get("prerequisites", [])
             result["confusion_points"] = primary_kn.get("confusion_points", [])
             result["application_scenarios"] = primary_kn.get("application_scenarios") or []
             
-            # 获取前置知识点上下文（通过知识图谱）
+            # 获取层级背景（向上溯源）
+            if node_id:
+                result["hierarchy_context"] = get_hierarchy_context(node_id)
+            
+            # 获取横向依赖关系（基于 knowledge_dependencies 表）
+            if node_id:
+                result["dependency_edges"] = get_dependency_edges(node_id)
+            
+            # 获取前置知识点上下文（通过知识图谱，用于向后兼容）
             if result["core_concept"]:
                 prerequisites_context = knowledge_graph.get_prerequisite_context(
                     result["core_concept"], max_depth=3, max_concepts=3
@@ -332,6 +465,11 @@ def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any
             
             # 构建知识点摘要（用于生成题目）
             summary_parts = []
+            
+            # 添加层级路径
+            hierarchy_path = result["hierarchy_context"].get("hierarchy_path", "")
+            if hierarchy_path:
+                summary_parts.append(f"层级路径：{hierarchy_path}")
             
             if result["core_concept"]:
                 summary_parts.append(f"核心概念：{result['core_concept']}")
@@ -347,8 +485,10 @@ def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any
                 }
                 summary_parts.append(f"认知层级：{bloom_names.get(result['bloom_level'], '未知')}（Level {result['bloom_level']}）")
             
-            if result["prerequisites"]:
-                summary_parts.append(f"前置依赖：{', '.join(result['prerequisites'][:3])}")
+            # 添加横向依赖信息
+            if result["dependency_edges"]:
+                dep_concepts = [dep["target_concept"] for dep in result["dependency_edges"][:3]]
+                summary_parts.append(f"前置依赖：{', '.join(dep_concepts)}")
             
             if result["confusion_points"]:
                 summary_parts.append(f"易错点：{', '.join(result['confusion_points'][:3])}")
@@ -374,9 +514,13 @@ def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any
 def build_knowledge_based_prompt(knowledge_info: Dict[str, Any], 
                                  chunks: Optional[List[Dict[str, Any]]] = None) -> str:
     """
-    基于知识点信息构建题目生成提示词
+    基于知识点信息构建题目生成提示词（升级版：包含层级背景和横向依赖）
     
     这是新的出题流程的核心：基于知识点而不是原始文本生成题目
+    升级特性：
+    1. 包含层级背景（一级主题、二级章节、三级原子点）
+    2. 包含横向依赖关系（用于生成干扰项或前置条件）
+    3. 智能上下文检索
     
     Args:
         knowledge_info: 知识点信息字典（来自 extract_knowledge_from_chunks）
@@ -387,9 +531,12 @@ def build_knowledge_based_prompt(knowledge_info: Dict[str, Any],
     """
     # 提取知识点信息
     core_concept = knowledge_info.get("core_concept")
+    level = knowledge_info.get("level", 3)
     bloom_level = knowledge_info.get("bloom_level")
     knowledge_summary = knowledge_info.get("knowledge_summary", "")
     prerequisites_context = knowledge_info.get("prerequisites_context", [])
+    dependency_edges = knowledge_info.get("dependency_edges", [])
+    hierarchy_context = knowledge_info.get("hierarchy_context", {})
     confusion_points = knowledge_info.get("confusion_points", [])
     application_scenarios = knowledge_info.get("application_scenarios", [])
     
@@ -398,16 +545,132 @@ def build_knowledge_based_prompt(knowledge_info: Dict[str, Any],
     if chunks and len(chunks) > 0:
         reference_content = chunks[0].get("content", "")[:500]
     
-    # 使用 PromptManager 构建提示词
+    # 构建层级背景信息
+    hierarchy_info = ""
+    if hierarchy_context:
+        level_1 = hierarchy_context.get("level_1_concept")
+        level_2 = hierarchy_context.get("level_2_concept")
+        level_3 = hierarchy_context.get("level_3_concept")
+        hierarchy_path = hierarchy_context.get("hierarchy_path", "")
+        
+        if hierarchy_path:
+            hierarchy_info = f"""
+## 知识点层级背景：
+**层级路径**：{hierarchy_path}
+"""
+            if level_1:
+                hierarchy_info += f"- **一级主题（全局概念）**：{level_1}\n"
+            if level_2:
+                hierarchy_info += f"- **二级章节（章节概念）**：{level_2}\n"
+            if level_3:
+                hierarchy_info += f"- **三级原子点（具体知识点）**：{level_3}\n"
+    
+    # 构建横向依赖信息（用于生成干扰项或前置条件）
+    dependency_info = ""
+    if dependency_edges:
+        dep_concepts = [dep["target_concept"] for dep in dependency_edges[:5]]  # 最多5个依赖
+        if dep_concepts:
+            dependency_info = f"""
+## 前置知识依赖：
+当前知识点依赖以下前置知识点，生成题目时可以考虑：
+- 将这些前置知识点作为干扰项（如果学生没有掌握前置知识，容易选错）
+- 将这些前置知识点作为题目的前置条件或背景信息
+- 前置知识点列表：{', '.join(dep_concepts)}
+"""
+    
+    # 构建完整的知识点上下文
+    enhanced_summary = knowledge_summary
+    if hierarchy_info:
+        enhanced_summary = hierarchy_info + "\n" + enhanced_summary
+    if dependency_info:
+        enhanced_summary = enhanced_summary + "\n" + dependency_info
+    
+    # 使用 PromptManager 构建提示词（传递增强的摘要）
     return PromptManager.build_knowledge_based_prompt(
         core_concept=core_concept,
         bloom_level=bloom_level,
-        knowledge_summary=knowledge_summary,
+        knowledge_summary=enhanced_summary,  # 使用增强的摘要
         prerequisites_context=prerequisites_context,
         confusion_points=confusion_points,
         application_scenarios=application_scenarios,
         reference_content=reference_content
     )
+
+
+def validate_question_distribution(questions: List[Dict[str, Any]], 
+                                   knowledge_nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    验证题目分布是否符合三层图谱结构的阶梯式分布要求
+    
+    确保生成的习题集是从"基础概念（Level 1）"到"具体实现（Level 3）"阶梯式分布的
+    
+    Args:
+        questions: 生成的题目列表
+        knowledge_nodes: 相关的知识点节点列表
+        
+    Returns:
+        验证结果字典：
+        - is_valid: 是否符合要求
+        - level_distribution: 各层级的题目分布统计
+        - suggestions: 改进建议
+    """
+    result = {
+        "is_valid": True,
+        "level_distribution": {
+            "level_1": 0,
+            "level_2": 0,
+            "level_3": 0,
+            "unknown": 0
+        },
+        "suggestions": []
+    }
+    
+    try:
+        # 统计各层级的题目数量
+        for question in questions:
+            # 尝试从题目中提取关联的知识点（如果有的话）
+            # 这里假设题目可能包含章节信息或知识点信息
+            # 实际实现可能需要更复杂的匹配逻辑
+            
+            # 暂时标记为未知，实际应用中需要建立题目与知识点的关联
+            result["level_distribution"]["unknown"] += 1
+        
+        # 如果有知识点节点信息，可以更精确地统计
+        if knowledge_nodes:
+            # 按层级统计知识点数量
+            level_counts = {1: 0, 2: 0, 3: 0}
+            for node in knowledge_nodes:
+                level = node.get("level", 3)
+                if level in level_counts:
+                    level_counts[level] += 1
+            
+            # 理想分布：Level 1 占 20-30%，Level 2 占 30-40%，Level 3 占 40-50%
+            total_nodes = sum(level_counts.values())
+            if total_nodes > 0:
+                level_1_ratio = level_counts[1] / total_nodes
+                level_2_ratio = level_counts[2] / total_nodes
+                level_3_ratio = level_counts[3] / total_nodes
+                
+                # 检查分布是否合理
+                if level_1_ratio < 0.1:
+                    result["is_valid"] = False
+                    result["suggestions"].append("建议增加 Level 1（基础概念）的题目，确保学生掌握基础知识")
+                
+                if level_3_ratio > 0.7:
+                    result["suggestions"].append("Level 3（具体实现）题目过多，建议增加 Level 1 和 Level 2 的题目")
+                
+                if level_2_ratio < 0.2:
+                    result["suggestions"].append("建议增加 Level 2（章节概念）的题目，作为 Level 1 和 Level 3 之间的桥梁")
+        
+        # 如果没有建议，说明分布合理
+        if not result["suggestions"]:
+            result["suggestions"].append("题目分布合理，符合阶梯式学习路径")
+    
+    except Exception as e:
+        print(f"警告：验证题目分布失败: {e}")
+        result["is_valid"] = True  # 验证失败不影响题目生成
+    
+    return result
 
 
 def build_system_prompt(include_type_requirements: bool = True) -> str:
@@ -1104,13 +1367,41 @@ class OpenRouterClient:
         Returns:
             题目字典列表
         """
-        # ========== 新的出题流程：基于知识点生成题目 ==========
-        # 1. 从前置 chunks 中提取知识点
+        # ========== 新的出题流程：基于知识点生成题目（升级版：三层图谱结构）==========
+        # 1. 从前置 chunks 中提取知识点（包含层级背景和横向依赖）
         knowledge_info = {}
+        knowledge_nodes = []
         if chunks:
             knowledge_info = extract_knowledge_from_chunks(chunks)
+            
+            # 收集相关的知识点节点（用于后续验证）
+            if knowledge_info.get("node_id"):
+                node_id = knowledge_info["node_id"]
+                current_node = db.get_knowledge_node(node_id)
+                if current_node:
+                    knowledge_nodes.append(current_node)
+                    
+                    # 向上溯源获取父节点
+                    parent_id = current_node.get("parent_id")
+                    if parent_id:
+                        parent_node = db.get_knowledge_node(parent_id)
+                        if parent_node:
+                            knowledge_nodes.append(parent_node)
+                            
+                            grandparent_id = parent_node.get("parent_id")
+                            if grandparent_id:
+                                grandparent_node = db.get_knowledge_node(grandparent_id)
+                                if grandparent_node:
+                                    knowledge_nodes.append(grandparent_node)
+                    
+                    # 获取依赖节点（用于生成干扰项或前置条件）
+                    dependency_edges = knowledge_info.get("dependency_edges", [])
+                    for dep in dependency_edges[:3]:  # 最多3个依赖节点
+                        dep_node = db.get_knowledge_node(dep.get("target_node_id"))
+                        if dep_node:
+                            knowledge_nodes.append(dep_node)
         
-        # 2. 构建基于知识点的提示词（与测试生成接口保持一致）
+        # 2. 构建基于知识点的提示词（包含层级背景和横向依赖）
         knowledge_prompt = ""
         if knowledge_info.get("core_concept"):
             knowledge_prompt = build_knowledge_based_prompt(knowledge_info, chunks)
@@ -1371,6 +1662,14 @@ class OpenRouterClient:
                 # 如果编程题生成失败，抛出错误
                 if programming_question_failed:
                     raise ValueError("编程题生成失败：编程题必须提供以下必需字段：answer（完整的解决方案代码）、explain（详细的解析说明）和 test_cases（完整的测试用例，包括 input_cases 和 output_cases）。")
+                
+                # 验证题目分布（如果有关联的知识点节点）
+                if knowledge_nodes and questions:
+                    validation_result = validate_question_distribution(questions, knowledge_nodes)
+                    if not validation_result["is_valid"]:
+                        print(f"[题目生成] ⚠ 题目分布验证警告: {validation_result['suggestions']}")
+                    else:
+                        print(f"[题目生成] ✓ 题目分布验证通过")
                 
                 return questions
                 

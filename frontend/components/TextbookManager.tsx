@@ -242,7 +242,7 @@ export default function TextbookManager() {
   }
 
   const handleBuildDependencies = async (textbookId: string) => {
-    if (!confirm('确定要构建知识点依赖关系吗？这将使用 LLM 分析教材下所有知识点之间的依赖关系，可能需要一些时间。')) {
+    if (!confirm('确定要重构知识点层级结构吗？这将使用 LLM 分析教材下所有知识点，按照计算机学科逻辑划分为三个层级（Level 1/2/3），并建立父子关系，可能需要一些时间。')) {
       return
     }
 
@@ -255,13 +255,23 @@ export default function TextbookManager() {
 
       if (!response.ok) {
         const errorData = await response.json()
-        throw new Error(errorData.detail || '构建依赖关系失败')
+        throw new Error(errorData.detail || '层级重构失败')
       }
 
       const result = await response.json()
-      alert(`依赖关系构建成功！\n共 ${result.total_concepts} 个知识点，成功构建 ${result.dependencies_built} 个依赖关系。`)
+      const message = `层级重构成功！\n` +
+        `共 ${result.total_concepts} 个知识点\n` +
+        `Level 1（一级全局）: ${result.level_1_count} 个\n` +
+        `Level 2（二级章节）: ${result.level_2_count} 个\n` +
+        `Level 3（三级原子）: ${result.level_3_count} 个\n` +
+        `建立的父子关系: ${result.relationships_built} 个`
+      if (result.missing_concepts > 0) {
+        alert(message + `\n\n⚠ 警告：有 ${result.missing_concepts} 个知识点未被分类，已默认设置为 Level 3`)
+      } else {
+        alert(message)
+      }
     } catch (err) {
-      alert(err instanceof Error ? err.message : '构建依赖关系失败')
+      alert(err instanceof Error ? err.message : '层级重构失败')
     } finally {
       setBuildingDependencies(false)
     }

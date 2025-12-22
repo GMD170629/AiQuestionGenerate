@@ -198,13 +198,30 @@ class Database:
                     chunk_id INTEGER NOT NULL,
                     file_id TEXT NOT NULL,
                     core_concept TEXT NOT NULL,
-                    prerequisites_json TEXT NOT NULL,
-                    confusion_points_json TEXT NOT NULL,
+                    level INTEGER NOT NULL DEFAULT 3 CHECK(level >= 1 AND level <= 3),
+                    parent_id TEXT,
+                    prerequisites_json TEXT NOT NULL DEFAULT '[]',
+                    confusion_points_json TEXT NOT NULL DEFAULT '[]',
                     bloom_level INTEGER NOT NULL CHECK(bloom_level >= 1 AND bloom_level <= 6),
                     application_scenarios_json TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (chunk_id) REFERENCES chunks(chunk_id) ON DELETE CASCADE,
-                    FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
+                    FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE,
+                    FOREIGN KEY (parent_id) REFERENCES knowledge_nodes(node_id) ON DELETE SET NULL
+                )
+            """)
+            
+            # 知识点依赖关系表（存储横向依赖关系：同级或跨级）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_dependencies (
+                    dependency_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_node_id TEXT NOT NULL,
+                    target_node_id TEXT NOT NULL,
+                    dependency_type TEXT NOT NULL DEFAULT 'depends_on',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(node_id) ON DELETE CASCADE,
+                    FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(node_id) ON DELETE CASCADE,
+                    UNIQUE(source_node_id, target_node_id)
                 )
             """)
             
@@ -232,6 +249,10 @@ class Database:
                     INSERT INTO ai_config (api_endpoint, api_key, model, updated_at)
                     VALUES (?, ?, ?, ?)
                 """, (default_endpoint, default_api_key, default_model, datetime.now().isoformat()))
+            
+            # 先运行数据库迁移（如果表已存在，迁移会添加新字段）
+            # 必须在创建索引之前运行，确保所有列都存在
+            self._run_migrations(conn)
             
             # 创建索引以提高查询性能
             cursor.execute("""
@@ -285,8 +306,86 @@ class Database:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_bloom_level ON knowledge_nodes(bloom_level)
             """)
+            # 这些索引依赖于迁移逻辑添加的列，所以必须在迁移之后创建
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_level ON knowledge_nodes(level)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_parent_id ON knowledge_nodes(parent_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_dependencies_source ON knowledge_dependencies(source_node_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_dependencies_target ON knowledge_dependencies(target_node_id)
+            """)
             
             conn.commit()
+    
+    def _run_migrations(self, conn):
+        """
+        运行数据库迁移（在初始化时调用）
+        
+        Args:
+            conn: 数据库连接
+        """
+        cursor = conn.cursor()
+        
+        try:
+            # 检查 knowledge_nodes 表是否存在
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_nodes'")
+            table_exists = cursor.fetchone() is not None
+            
+            if table_exists:
+                # 检查表结构，获取现有字段
+                cursor.execute("PRAGMA table_info(knowledge_nodes)")
+                rows = cursor.fetchall()
+                # 使用 Row 对象的字典访问方式（因为连接已设置 row_factory = sqlite3.Row）
+                columns = [row["name"] for row in rows]
+                
+                # 如果表存在但没有 level 字段，需要添加
+                if "level" not in columns:
+                    try:
+                        cursor.execute("""
+                            ALTER TABLE knowledge_nodes 
+                            ADD COLUMN level INTEGER NOT NULL DEFAULT 3 CHECK(level >= 1 AND level <= 3)
+                        """)
+                    except sqlite3.OperationalError as e:
+                        print(f"添加 level 字段失败（可能已存在）: {e}")
+                
+                # 如果表存在但没有 parent_id 字段，需要添加
+                if "parent_id" not in columns:
+                    try:
+                        cursor.execute("""
+                            ALTER TABLE knowledge_nodes 
+                            ADD COLUMN parent_id TEXT
+                        """)
+                    except sqlite3.OperationalError as e:
+                        print(f"添加 parent_id 字段失败（可能已存在）: {e}")
+                
+                # 注意：索引创建在 _init_database 方法中进行，这里只负责添加列
+            
+            # 确保 knowledge_dependencies 表存在
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_dependencies (
+                    dependency_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_node_id TEXT NOT NULL,
+                    target_node_id TEXT NOT NULL,
+                    dependency_type TEXT NOT NULL DEFAULT 'depends_on',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(node_id) ON DELETE CASCADE,
+                    FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(node_id) ON DELETE CASCADE,
+                    UNIQUE(source_node_id, target_node_id)
+                )
+            """)
+            
+            # 注意：索引创建在 _init_database 方法中进行，这里只负责创建表
+            
+            conn.commit()
+        except Exception as e:
+            # 迁移失败不应该阻止数据库初始化
+            print(f"数据库迁移警告: {e}")
+            conn.rollback()
     
     @contextmanager
     def _get_connection(self):
@@ -1527,9 +1626,10 @@ class Database:
     # ========== 知识点节点相关方法 ==========
     
     def store_knowledge_node(self, node_id: str, chunk_id: int, file_id: str,
-                            core_concept: str, prerequisites: List[str],
+                            core_concept: str, level: int, prerequisites: List[str],
                             confusion_points: List[str], bloom_level: int,
-                            application_scenarios: Optional[List[str]] = None) -> bool:
+                            application_scenarios: Optional[List[str]] = None,
+                            parent_id: Optional[str] = None) -> bool:
         """
         存储知识点节点
         
@@ -1538,10 +1638,12 @@ class Database:
             chunk_id: 关联的切片 ID
             file_id: 所属文件 ID
             core_concept: 核心概念
-            prerequisites: 前置依赖知识点列表
+            level: 知识点层级（1-一级全局，2-二级章节，3-三级原子点）
+            prerequisites: 前置依赖知识点列表（已废弃，保留用于兼容）
             confusion_points: 学生易错点列表
             bloom_level: Bloom 认知层级（1-6）
             application_scenarios: 应用场景列表（可选）
+            parent_id: 父节点 ID（可选，用于构建层级关系）
             
         Returns:
             是否成功存储
@@ -1557,11 +1659,13 @@ class Database:
             try:
                 cursor.execute("""
                     INSERT OR REPLACE INTO knowledge_nodes 
-                    (node_id, chunk_id, file_id, core_concept, prerequisites_json, 
-                     confusion_points_json, bloom_level, application_scenarios_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (node_id, chunk_id, file_id, core_concept, prerequisites_json,
-                      confusion_points_json, bloom_level, application_scenarios_json, now))
+                    (node_id, chunk_id, file_id, core_concept, level, parent_id,
+                     prerequisites_json, confusion_points_json, bloom_level, 
+                     application_scenarios_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (node_id, chunk_id, file_id, core_concept, level, parent_id,
+                      prerequisites_json, confusion_points_json, bloom_level, 
+                      application_scenarios_json, now))
                 conn.commit()
                 return True
             except sqlite3.IntegrityError as e:
@@ -1581,8 +1685,9 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT node_id, chunk_id, file_id, core_concept, prerequisites_json,
-                       confusion_points_json, bloom_level, application_scenarios_json, created_at
+                SELECT node_id, chunk_id, file_id, core_concept, level, parent_id,
+                       prerequisites_json, confusion_points_json, bloom_level, 
+                       application_scenarios_json, created_at
                 FROM knowledge_nodes
                 WHERE node_id = ?
             """, (node_id,))
@@ -1593,10 +1698,12 @@ class Database:
                     "chunk_id": row["chunk_id"],
                     "file_id": row["file_id"],
                     "core_concept": row["core_concept"],
-                    "prerequisites": json.loads(row["prerequisites_json"]),
-                    "confusion_points": json.loads(row["confusion_points_json"]),
+                    "level": row["level"] if "level" in row else 3,  # 兼容旧数据，默认为3
+                    "parent_id": row["parent_id"] if "parent_id" in row else None,
+                    "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row and row["prerequisites_json"] else [],
+                    "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row and row["confusion_points_json"] else [],
                     "bloom_level": row["bloom_level"],
-                    "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if "application_scenarios_json" in row and row["application_scenarios_json"] else None,
                     "created_at": row["created_at"]
                 }
             return None
@@ -1614,8 +1721,9 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT node_id, chunk_id, file_id, core_concept, prerequisites_json,
-                       confusion_points_json, bloom_level, application_scenarios_json, created_at
+                SELECT node_id, chunk_id, file_id, core_concept, level, parent_id,
+                       prerequisites_json, confusion_points_json, bloom_level, 
+                       application_scenarios_json, created_at
                 FROM knowledge_nodes
                 WHERE chunk_id = ?
                 ORDER BY created_at ASC
@@ -1628,10 +1736,12 @@ class Database:
                     "chunk_id": row["chunk_id"],
                     "file_id": row["file_id"],
                     "core_concept": row["core_concept"],
-                    "prerequisites": json.loads(row["prerequisites_json"]),
-                    "confusion_points": json.loads(row["confusion_points_json"]),
+                    "level": row["level"] if "level" in row.keys() else 3,  # 兼容旧数据
+                    "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
+                    "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row.keys() and row["prerequisites_json"] else [],
+                    "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row.keys() and row["confusion_points_json"] else [],
                     "bloom_level": row["bloom_level"],
-                    "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if "application_scenarios_json" in row.keys() and row["application_scenarios_json"] else None,
                     "created_at": row["created_at"]
                 })
             return nodes
@@ -1649,11 +1759,12 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT node_id, chunk_id, file_id, core_concept, prerequisites_json,
-                       confusion_points_json, bloom_level, application_scenarios_json, created_at
+                SELECT node_id, chunk_id, file_id, core_concept, level, parent_id,
+                       prerequisites_json, confusion_points_json, bloom_level, 
+                       application_scenarios_json, created_at
                 FROM knowledge_nodes
                 WHERE file_id = ?
-                ORDER BY created_at ASC
+                ORDER BY level ASC, created_at ASC
             """, (file_id,))
             rows = cursor.fetchall()
             nodes = []
@@ -1663,10 +1774,12 @@ class Database:
                     "chunk_id": row["chunk_id"],
                     "file_id": row["file_id"],
                     "core_concept": row["core_concept"],
-                    "prerequisites": json.loads(row["prerequisites_json"]),
-                    "confusion_points": json.loads(row["confusion_points_json"]),
+                    "level": row["level"] if "level" in row.keys() else 3,  # 兼容旧数据
+                    "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
+                    "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row.keys() and row["prerequisites_json"] else [],
+                    "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row.keys() and row["confusion_points_json"] else [],
                     "bloom_level": row["bloom_level"],
-                    "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if "application_scenarios_json" in row.keys() and row["application_scenarios_json"] else None,
                     "created_at": row["created_at"]
                 })
             return nodes
@@ -1725,11 +1838,12 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"""
-                SELECT node_id, chunk_id, file_id, core_concept, prerequisites_json,
-                       confusion_points_json, bloom_level, application_scenarios_json, created_at
+                SELECT node_id, chunk_id, file_id, core_concept, level, parent_id,
+                       prerequisites_json, confusion_points_json, bloom_level, 
+                       application_scenarios_json, created_at
                 FROM knowledge_nodes
                 WHERE file_id IN ({placeholders})
-                ORDER BY created_at ASC
+                ORDER BY level ASC, created_at ASC
             """, file_ids)
             rows = cursor.fetchall()
             nodes = []
@@ -1739,17 +1853,20 @@ class Database:
                     "chunk_id": row["chunk_id"],
                     "file_id": row["file_id"],
                     "core_concept": row["core_concept"],
-                    "prerequisites": json.loads(row["prerequisites_json"]) if row["prerequisites_json"] else [],
-                    "confusion_points": json.loads(row["confusion_points_json"]) if row["confusion_points_json"] else [],
+                    "level": row["level"] if "level" in row.keys() else 3,  # 兼容旧数据
+                    "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
+                    "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row.keys() and row["prerequisites_json"] else [],
+                    "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row.keys() and row["confusion_points_json"] else [],
                     "bloom_level": row["bloom_level"],
-                    "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if "application_scenarios_json" in row.keys() and row["application_scenarios_json"] else None,
                     "created_at": row["created_at"]
                 })
             return nodes
     
     def update_knowledge_node_prerequisites(self, node_id: str, prerequisites: List[str]) -> bool:
         """
-        更新知识点节点的前置依赖
+        更新知识点节点的前置依赖（已废弃，保留用于兼容）
+        建议使用 add_knowledge_dependency 方法
         
         Args:
             node_id: 节点 ID
@@ -1768,6 +1885,169 @@ class Database:
             """, (prerequisites_json, node_id))
             conn.commit()
             return cursor.rowcount > 0
+    
+    # ========== 知识点依赖关系相关方法 ==========
+    
+    def add_knowledge_dependency(self, source_node_id: str, target_node_id: str, 
+                                 dependency_type: str = "depends_on") -> bool:
+        """
+        添加知识点依赖关系（横向依赖：同级或跨级）
+        
+        Args:
+            source_node_id: 源节点 ID（依赖者）
+            target_node_id: 目标节点 ID（被依赖者）
+            dependency_type: 依赖类型，默认为 "depends_on"
+            
+        Returns:
+            是否成功添加
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+            try:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO knowledge_dependencies 
+                    (source_node_id, target_node_id, dependency_type, created_at)
+                    VALUES (?, ?, ?, ?)
+                """, (source_node_id, target_node_id, dependency_type, now))
+                conn.commit()
+                return cursor.rowcount > 0
+            except sqlite3.IntegrityError as e:
+                print(f"添加知识点依赖关系失败: {e}")
+                return False
+    
+    def remove_knowledge_dependency(self, source_node_id: str, target_node_id: str) -> bool:
+        """
+        删除知识点依赖关系
+        
+        Args:
+            source_node_id: 源节点 ID
+            target_node_id: 目标节点 ID
+            
+        Returns:
+            是否成功删除
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM knowledge_dependencies
+                WHERE source_node_id = ? AND target_node_id = ?
+            """, (source_node_id, target_node_id))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def get_node_dependencies(self, node_id: str) -> List[Dict[str, Any]]:
+        """
+        获取节点的所有依赖关系（该节点依赖的其他节点）
+        
+        Args:
+            node_id: 节点 ID
+            
+        Returns:
+            依赖关系列表，每个元素包含 target_node_id 和 dependency_type
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT target_node_id, dependency_type, created_at
+                FROM knowledge_dependencies
+                WHERE source_node_id = ?
+                ORDER BY created_at ASC
+            """, (node_id,))
+            rows = cursor.fetchall()
+            return [
+                {
+                    "target_node_id": row["target_node_id"],
+                    "dependency_type": row["dependency_type"],
+                    "created_at": row["created_at"]
+                }
+                for row in rows
+            ]
+    
+    def get_node_dependents(self, node_id: str) -> List[Dict[str, Any]]:
+        """
+        获取节点的所有被依赖关系（依赖该节点的其他节点）
+        
+        Args:
+            node_id: 节点 ID
+            
+        Returns:
+            被依赖关系列表，每个元素包含 source_node_id 和 dependency_type
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT source_node_id, dependency_type, created_at
+                FROM knowledge_dependencies
+                WHERE target_node_id = ?
+                ORDER BY created_at ASC
+            """, (node_id,))
+            rows = cursor.fetchall()
+            return [
+                {
+                    "source_node_id": row["source_node_id"],
+                    "dependency_type": row["dependency_type"],
+                    "created_at": row["created_at"]
+                }
+                for row in rows
+            ]
+    
+    def delete_node_dependencies(self, node_id: str) -> bool:
+        """
+        删除节点的所有依赖关系（包括作为源节点和目标节点）
+        
+        Args:
+            node_id: 节点 ID
+            
+        Returns:
+            是否成功删除
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM knowledge_dependencies
+                WHERE source_node_id = ? OR target_node_id = ?
+            """, (node_id, node_id))
+            conn.commit()
+            return True
+    
+    def get_child_nodes(self, parent_id: str) -> List[Dict[str, Any]]:
+        """
+        获取节点的所有子节点（基于 parent_id）
+        
+        Args:
+            parent_id: 父节点 ID
+            
+        Returns:
+            子节点列表
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT node_id, chunk_id, file_id, core_concept, level, parent_id,
+                       prerequisites_json, confusion_points_json, bloom_level, 
+                       application_scenarios_json, created_at
+                FROM knowledge_nodes
+                WHERE parent_id = ?
+                ORDER BY level ASC, created_at ASC
+            """, (parent_id,))
+            rows = cursor.fetchall()
+            nodes = []
+            for row in rows:
+                nodes.append({
+                    "node_id": row["node_id"],
+                    "chunk_id": row["chunk_id"],
+                    "file_id": row["file_id"],
+                    "core_concept": row["core_concept"],
+                    "level": row["level"] if "level" in row.keys() else 3,
+                    "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
+                    "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row.keys() and row["prerequisites_json"] else [],
+                    "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row.keys() and row["confusion_points_json"] else [],
+                    "bloom_level": row["bloom_level"],
+                    "application_scenarios": json.loads(row["application_scenarios_json"]) if "application_scenarios_json" in row.keys() and row["application_scenarios_json"] else None,
+                    "created_at": row["created_at"]
+                })
+            return nodes
 
 
 # 全局数据库实例

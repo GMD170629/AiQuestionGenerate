@@ -534,6 +534,15 @@ class KnowledgeNode(BaseModel):
     """
     知识点节点模型
     用于存储从文档切片中提取的知识点语义信息
+    
+    层级结构：
+    - level 1: 一级全局知识点（全局概念）
+    - level 2: 二级章节知识点（章节级概念）
+    - level 3: 三级原子知识点（具体知识点）
+    
+    关系结构：
+    - parent_id: 用于构建一级-二级、二级-三级的父子从属关系
+    - dependencies: 通过 knowledge_dependencies 表存储横向依赖关系（同级或跨级）
     """
     
     node_id: Optional[str] = Field(
@@ -557,9 +566,21 @@ class KnowledgeNode(BaseModel):
         description="核心概念（该切片的主要知识点）"
     )
     
+    level: int = Field(
+        ...,
+        ge=1,
+        le=3,
+        description="知识点层级：1-一级全局，2-二级章节，3-三级原子点"
+    )
+    
+    parent_id: Optional[str] = Field(
+        default=None,
+        description="父节点 ID（用于构建层级关系：一级->二级，二级->三级）"
+    )
+    
     prerequisites: List[str] = Field(
         default_factory=list,
-        description="前置依赖知识点列表（学习该概念前需要掌握的知识点）"
+        description="前置依赖知识点列表（学习该概念前需要掌握的知识点，已废弃，使用 knowledge_dependencies 表）"
     )
     
     confusion_points: List[str] = Field(
@@ -591,7 +612,9 @@ class KnowledgeNode(BaseModel):
                 "chunk_id": 1,
                 "file_id": "file-456",
                 "core_concept": "死锁",
-                "prerequisites": ["进程同步", "资源竞争"],
+                "level": 3,
+                "parent_id": "node-456",
+                "prerequisites": [],
                 "confusion_points": ["死锁与饥饿的区别", "如何判断是否发生死锁"],
                 "bloom_level": 3,
                 "application_scenarios": ["多线程编程", "数据库事务管理"],

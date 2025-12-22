@@ -81,6 +81,14 @@ async def get_graph_data(
         
         # 构建节点数据
         nodes_data = []
+        # 构建概念到节点ID的映射（用于查找层级信息）
+        concept_to_node_id = {}
+        for node_name in all_nodes:
+            metadata = knowledge_graph.concept_metadata.get(node_name, {})
+            node_id = metadata.get("node_id")
+            if node_id:
+                concept_to_node_id[node_name] = node_id
+        
         for node in all_nodes:
             metadata = knowledge_graph.concept_metadata.get(node, {})
             
@@ -89,8 +97,79 @@ async def get_graph_data(
             out_degree = knowledge_graph.graph.out_degree(node)
             total_degree = in_degree + out_degree
             
-            # 根据 Bloom 层级设置颜色
-            # 确保 bloom_level 不为 None，如果为 None 或不存在则使用默认值 3
+            # 获取层级信息
+            node_id = metadata.get("node_id")
+            # 优先使用 concept_metadata 中的 level 和 parent_id
+            level = metadata.get("level")  # 可能为 None
+            parent_id = metadata.get("parent_id")
+            parent_concept = None
+            hierarchy_path = node
+            
+            # 如果 metadata 中没有 level 或 parent_id，从数据库查询
+            node_info = None
+            if node_id:
+                if level is None or parent_id is None:
+                    node_info = db.get_knowledge_node(node_id)
+                    if node_info:
+                        # 只有在 metadata 中没有时才使用数据库的值
+                        if level is None:
+                            level = node_info.get("level", 3)  # 默认三级
+                        if parent_id is None:
+                            parent_id = node_info.get("parent_id")
+                else:
+                    # metadata 中已有 level 和 parent_id，但仍需要 node_info 来构建层级路径
+                    node_info = db.get_knowledge_node(node_id)
+            
+            if level is None:
+                # 如果 node_id 也不存在，使用默认值
+                level = 3
+            
+            # 构建层级路径（需要从数据库查询父节点信息）
+            if node_info:
+                path_parts = []
+                current_node_info = node_info
+                current_level = level
+                
+                # 向上溯源构建路径
+                while current_node_info:
+                    current_concept = current_node_info.get("core_concept", "")
+                    if current_concept:
+                        path_parts.insert(0, current_concept)
+                    
+                    if current_level == 1:
+                        break
+                    
+                    parent_id_temp = current_node_info.get("parent_id")
+                    if parent_id_temp:
+                        parent_node_info = db.get_knowledge_node(parent_id_temp)
+                        if parent_node_info:
+                            current_node_info = parent_node_info
+                            current_level = parent_node_info.get("level", 3)
+                        else:
+                            break
+                    else:
+                        break
+                
+                if path_parts:
+                    hierarchy_path = " > ".join(path_parts)
+                
+                # 获取父节点概念
+                if parent_id:
+                    parent_node_info = db.get_knowledge_node(parent_id)
+                    if parent_node_info:
+                        parent_concept = parent_node_info.get("core_concept", "")
+            
+            # 根据层级设置节点形状和颜色
+            # Level 1: 大圆形，深蓝色
+            # Level 2: 中等圆形，蓝色
+            # Level 3: 小圆形，根据 Bloom 层级设置颜色
+            level_colors = {
+                1: "#1e40af",  # 深蓝色 - Level 1
+                2: "#3b82f6",  # 蓝色 - Level 2
+                3: None,  # Level 3 使用 Bloom 颜色
+            }
+            
+            # 根据 Bloom 层级设置颜色（仅用于 Level 3）
             bloom_level = metadata.get("bloom_level")
             if bloom_level is None or not isinstance(bloom_level, int) or bloom_level < 1 or bloom_level > 6:
                 bloom_level = 3  # 默认设置为应用层级
@@ -103,14 +182,32 @@ async def get_graph_data(
                 5: "#ef4444",  # 红色 - 评价
                 6: "#a855f7",  # 紫色 - 创造
             }
-            color = bloom_colors.get(bloom_level, "#fde047")  # 默认黄色（应用层级）
+            
+            # 确定最终颜色
+            if level == 1:
+                color = level_colors[1]
+                node_size = max(25, min(35, total_degree * 2 + 25))  # Level 1 更大
+                node_shape = "dot"
+            elif level == 2:
+                color = level_colors[2]
+                node_size = max(15, min(25, total_degree * 2 + 15))  # Level 2 中等
+                node_shape = "dot"
+            else:
+                color = bloom_colors.get(bloom_level, "#fde047")  # Level 3 使用 Bloom 颜色
+                node_size = max(5, min(20, total_degree * 2 + 5))  # Level 3 较小
+                node_shape = "dot"
             
             nodes_data.append({
                 "id": node,
                 "label": node,
+                "level": level,
+                "parent_id": parent_id,
+                "parent_concept": parent_concept,
+                "hierarchy_path": hierarchy_path,
                 "bloom_level": bloom_level,
                 "color": color,
-                "size": max(5, min(20, total_degree * 2 + 5)),  # 节点大小基于连接度
+                "size": node_size,
+                "shape": node_shape,
                 "in_degree": in_degree,
                 "out_degree": out_degree,
                 "metadata": {
@@ -127,12 +224,29 @@ async def get_graph_data(
             successors = list(knowledge_graph.graph.successors(source))
             for target in successors:
                 if target in subgraph_nodes:
+                    # 获取边的属性（relation 类型）
+                    edge_data = knowledge_graph.graph.get_edge_data(source, target)
+                    relation = edge_data.get("relation", "depends_on") if edge_data else "depends_on"
+                    
+                    # 根据关系类型设置标签
+                    if relation == "parent_child":
+                        label = "属于"
+                    else:
+                        label = "依赖"
+                    
                     edges_data.append({
                         "source": source,
                         "target": target,
-                        "relation": "depends_on",
-                        "label": "依赖"
+                        "relation": relation,
+                        "label": label
                     })
+        
+        # 统计各层级的节点数量
+        level_counts = {1: 0, 2: 0, 3: 0}
+        for node in nodes_data:
+            level = node.get("level", 3)
+            if level in level_counts:
+                level_counts[level] += 1
         
         return JSONResponse(content={
             "nodes": nodes_data,
@@ -140,6 +254,7 @@ async def get_graph_data(
             "stats": {
                 "total_nodes": len(nodes_data),
                 "total_edges": len(edges_data),
+                "level_counts": level_counts,
             }
         })
         

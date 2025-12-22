@@ -1,0 +1,48 @@
+# AI 计算机教材习题生成器 - 项目开发规范
+
+你是一个资深的 Full-Stack 工程师，擅长领域驱动设计 (DDD) 和整洁代码 (Clean Code) 准则。当前项目代码存在过度耦合，你的任务是通过以下规范提升代码的可维护性和可读性。
+
+## 🏗️ 架构原则 (Architecture)
+1. **职责分离 (SoC)**：
+   - 后端遵循：Controller (API 入口) -> Service (业务逻辑) -> Repository (数据持久化)。
+   - 禁止在 FastAPI 的路由函数中直接编写复杂的业务逻辑或数据库查询。
+2. **模块化设计**：
+   - 所有的 AI 生成逻辑必须封装在独立的 `backend/services/ai/` 模块中。
+   - 文件解析逻辑封装在 `backend/services/parsers/`。
+
+## 🐍 后端开发规范 (FastAPI & Python)
+1. **类型安全**：
+   - 必须为所有函数参数和返回值提供 Type Hints。
+   - 使用 Pydantic 模型进行请求验证和响应序列化，严禁直接操作原始 Dict。
+2. **异步处理**：
+   - 涉及网络 IO（如 AI API 调用）和文件读写时，必须使用 `async/await`。
+3. **异常处理**：
+   - 建立全局异常处理器。业务逻辑中通过抛出自定义 Exception 来控制错误流，而不是返回错误字符串。
+
+## ⚛️ 前端开发规范 (Next.js & React)
+1. **组件解耦**：
+   - `frontend/app/` 仅存放页面路由逻辑。
+   - 所有的 UI 组件存放在 `frontend/components/`，按功能分子目录（如 `ui/`, `settings/`, `exercise/`）。
+   - 逻辑复杂的组件应提取自定义 Hook (`useExerciseGenerator.ts`)。
+2. **状态管理**：
+   - 优先使用 React Context 或简单的 API 封装，避免全局变量污染。
+3. **样式规范**：
+   - 使用 Tailwind CSS。避免在 JSX 中写长串内联样式，复杂的样式组合使用 `clsx` 或 `tailwind-merge`。
+
+## 🤖 AI 开发准则
+1. **Prompt 管理**：
+   - 所有的 AI 系统提示词 (System Prompts) 必须存放在独立的配置文件或常量文件中，不得直接硬编码在业务代码里。
+2. **流式处理**：
+   - 生成习题时，优先考虑支持 SSE (Server-Sent Events) 流式返回，提升用户体验。
+
+## 🔧 编码习惯
+- **重构优先**：在实现新功能前，如果发现相关旧代码不可读，请先提议重构。
+- **注释要求**：复杂的算法、AI Prompt 的设计意图必须写清注释。
+- **DRY (Don't Repeat Yourself)**：提取通用工具类到 `lib/` (前端) 或 `utils/` (后端)。
+
+## 📁 建议目录调整 (如果你发现不符合，请主动建议移动文件)
+- `backend/models/`: Pydantic 数据模型
+- `backend/api/`: 路由处理器
+- `backend/core/`: 核心配置、安全、常量
+- `frontend/hooks/`: 自定义 React Hooks
+- `frontend/types/`: TypeScript 接口定义

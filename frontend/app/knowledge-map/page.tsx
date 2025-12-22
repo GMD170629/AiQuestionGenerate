@@ -71,7 +71,7 @@ export default function KnowledgeMapPage() {
               知识地图
             </h1>
             <p className="text-slate-600 dark:text-slate-400">
-              可视化展示教材知识点之间的依赖关系和层级结构
+              可视化展示教材知识点的三层图谱结构：一级全局概念、二级章节概念、三级原子知识点，以及它们之间的层级关系和横向依赖关系
             </p>
           </div>
           <button

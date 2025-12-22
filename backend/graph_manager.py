@@ -4,6 +4,7 @@
 """
 
 import json
+import uuid
 import httpx
 from typing import List, Dict, Any, Optional, Set, Tuple
 from collections import deque
@@ -973,6 +974,101 @@ async def build_dependency_edges(
         concept_to_node_id = {node["core_concept"]: node["node_id"] for node in knowledge_nodes}
         node_id_to_concept = {node["node_id"]: node["core_concept"] for node in knowledge_nodes}
         
+        # 获取教材的第一个文件（用于创建新节点）
+        textbook_files = db.get_textbook_files(textbook_id)
+        default_file_id = None
+        default_chunk_id = -1  # 使用虚拟 chunk_id
+        if textbook_files:
+            default_file_id = textbook_files[0]["file_id"]
+            # 尝试获取该文件的第一个 chunk_id
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT chunk_id FROM chunks 
+                    WHERE file_id = ? 
+                    ORDER BY chunk_index ASC 
+                    LIMIT 1
+                """, (default_file_id,))
+                chunk_row = cursor.fetchone()
+                if chunk_row:
+                    default_chunk_id = chunk_row["chunk_id"]
+        
+        if not default_file_id:
+            return {
+                "success": False,
+                "level_1_edges": 0,
+                "level_2_edges": 0,
+                "level_3_edges": 0,
+                "total_edges": 0,
+                "edges_added": 0,
+                "cycles_detected": 0,
+                "message": f"教材 {textbook_name} 没有关联的文件，无法创建新节点"
+            }
+        
+        def _ensure_node_exists(concept: str, level: int, parent_concept: Optional[str] = None) -> str:
+            """
+            确保节点存在，如果不存在则创建
+            
+            Args:
+                concept: 概念名称
+                level: 层级（1/2/3）
+                parent_concept: 父节点概念名称（可选）
+                
+            Returns:
+                节点的 node_id
+            """
+            if concept in concept_to_node_id:
+                return concept_to_node_id[concept]
+            
+            # 节点不存在，需要创建
+            print(f"[依赖构建] ⚠ 发现缺失节点 '{concept}'，自动创建（Level {level}）")
+            
+            # 生成新的 node_id
+            new_node_id = str(uuid.uuid4())
+            
+            # 确定 parent_id
+            parent_id = None
+            if parent_concept and parent_concept in concept_to_node_id:
+                parent_id = concept_to_node_id[parent_concept]
+            
+            # 创建节点到数据库
+            success = db.store_knowledge_node(
+                node_id=new_node_id,
+                chunk_id=default_chunk_id,
+                file_id=default_file_id,
+                core_concept=concept,
+                level=level,
+                prerequisites=[],
+                confusion_points=[],
+                bloom_level=3,  # 默认应用层级
+                application_scenarios=None,
+                parent_id=parent_id
+            )
+            
+            if success:
+                # 更新映射
+                concept_to_node_id[concept] = new_node_id
+                node_id_to_concept[new_node_id] = concept
+                
+                # 添加到知识节点列表（用于后续处理）
+                knowledge_nodes.append({
+                    "node_id": new_node_id,
+                    "core_concept": concept,
+                    "level": level,
+                    "parent_id": parent_id,
+                    "file_id": default_file_id
+                })
+                
+                print(f"[依赖构建] ✓ 成功创建节点 '{concept}' (node_id: {new_node_id}, level: {level})")
+                return new_node_id
+            else:
+                print(f"[依赖构建] ✗ 创建节点失败: {concept}")
+                # 即使创建失败，也返回一个临时 ID，避免后续错误
+                temp_node_id = f"temp_{concept}"
+                concept_to_node_id[concept] = temp_node_id
+                node_id_to_concept[temp_node_id] = concept
+                return temp_node_id
+        
         print(f"[依赖构建] 开始为教材 {textbook_name} 构建横向依赖关系")
         print(f"[依赖构建]   Level 1: {len(level_1_nodes)} 个")
         print(f"[依赖构建]   Level 2: {len(level_2_nodes)} 个")
@@ -1030,20 +1126,20 @@ async def build_dependency_edges(
                 source_concept = dep["source"]
                 target_concept = dep["target"]
                 
-                if source_concept in concept_to_node_id and target_concept in concept_to_node_id:
-                    source_id = concept_to_node_id[source_concept]
-                    target_id = concept_to_node_id[target_concept]
-                    
-                    # 检查是否会形成循环
-                    temp_graph.add_edge(source_id, target_id)
-                    if not nx.is_directed_acyclic_graph(temp_graph):
-                        # 如果形成循环，移除这条边
-                        temp_graph.remove_edge(source_id, target_id)
-                        cycles_detected += 1
-                        print(f"[依赖构建] ⚠ 检测到循环依赖（已避免）: {source_concept} -> {target_concept}")
-                    else:
-                        all_edges.append((source_id, target_id))
-                        level_1_edges += 1
+                # 确保节点存在（如果不存在则自动创建）
+                source_id = _ensure_node_exists(source_concept, level=1)
+                target_id = _ensure_node_exists(target_concept, level=1)
+                
+                # 检查是否会形成循环
+                temp_graph.add_edge(source_id, target_id)
+                if not nx.is_directed_acyclic_graph(temp_graph):
+                    # 如果形成循环，移除这条边
+                    temp_graph.remove_edge(source_id, target_id)
+                    cycles_detected += 1
+                    print(f"[依赖构建] ⚠ 检测到循环依赖（已避免）: {source_concept} -> {target_concept}")
+                else:
+                    all_edges.append((source_id, target_id))
+                    level_1_edges += 1
         
         # ========== 2. 构建 Level 2 之间的依赖关系（同一父节点下）==========
         level_2_edges = 0
@@ -1060,9 +1156,15 @@ async def build_dependency_edges(
                     level_2_by_parent[parent_id].append(node)
             
             # 对每个父节点下的 Level 2 节点进行分析
-            for parent_id, children_nodes in level_2_by_parent.items():
+            for parent_node_id, children_nodes in level_2_by_parent.items():
                 if len(children_nodes) > 1:
-                    parent_concept = node_id_to_concept.get(parent_id, "未知")
+                    # 获取父节点的概念名称（用于创建新节点时设置 parent_id）
+                    parent_concept_name = node_id_to_concept.get(parent_node_id)
+                    if not parent_concept_name:
+                        # 如果父节点不存在，跳过这个分组
+                        print(f"[依赖构建] ⚠ 警告：父节点 ID {parent_node_id} 不存在，跳过该分组")
+                        continue
+                    
                     level_2_concepts = [node["core_concept"] for node in children_nodes]
                     
                     # 调用 LLM 分析同一父节点下 Level 2 之间的依赖关系
@@ -1070,7 +1172,7 @@ async def build_dependency_edges(
                         level_2_concepts,
                         level=2,
                         textbook_name=textbook_name,
-                        parent_concept=parent_concept,
+                        parent_concept=parent_concept_name,
                         client=client,
                         model=model,
                         api_endpoint=api_endpoint,
@@ -1082,20 +1184,20 @@ async def build_dependency_edges(
                         source_concept = dep["source"]
                         target_concept = dep["target"]
                         
-                        if source_concept in concept_to_node_id and target_concept in concept_to_node_id:
-                            source_id = concept_to_node_id[source_concept]
-                            target_id = concept_to_node_id[target_concept]
-                            
-                            # 检查是否会形成循环
-                            temp_graph.add_edge(source_id, target_id)
-                            if not nx.is_directed_acyclic_graph(temp_graph):
-                                # 如果形成循环，移除这条边
-                                temp_graph.remove_edge(source_id, target_id)
-                                cycles_detected += 1
-                                print(f"[依赖构建] ⚠ 检测到循环依赖（已避免）: {source_concept} -> {target_concept}")
-                            else:
-                                all_edges.append((source_id, target_id))
-                                level_2_edges += 1
+                        # 确保节点存在（如果不存在则自动创建，使用当前父节点）
+                        source_id = _ensure_node_exists(source_concept, level=2, parent_concept=parent_concept_name)
+                        target_id = _ensure_node_exists(target_concept, level=2, parent_concept=parent_concept_name)
+                        
+                        # 检查是否会形成循环
+                        temp_graph.add_edge(source_id, target_id)
+                        if not nx.is_directed_acyclic_graph(temp_graph):
+                            # 如果形成循环，移除这条边
+                            temp_graph.remove_edge(source_id, target_id)
+                            cycles_detected += 1
+                            print(f"[依赖构建] ⚠ 检测到循环依赖（已避免）: {source_concept} -> {target_concept}")
+                        else:
+                            all_edges.append((source_id, target_id))
+                            level_2_edges += 1
         
         # ========== 3. 构建 Level 3 之间的依赖关系 ==========
         level_3_edges = 0
@@ -1112,9 +1214,15 @@ async def build_dependency_edges(
                     level_3_by_parent[parent_id].append(node)
             
             # 对每个父节点下的 Level 3 节点进行分析
-            for parent_id, children_nodes in level_3_by_parent.items():
+            for parent_node_id, children_nodes in level_3_by_parent.items():
                 if len(children_nodes) > 1:
-                    parent_concept = node_id_to_concept.get(parent_id, "未知")
+                    # 获取父节点的概念名称（用于创建新节点时设置 parent_id）
+                    parent_concept_name = node_id_to_concept.get(parent_node_id)
+                    if not parent_concept_name:
+                        # 如果父节点不存在，跳过这个分组
+                        print(f"[依赖构建] ⚠ 警告：父节点 ID {parent_node_id} 不存在，跳过该分组")
+                        continue
+                    
                     level_3_concepts = [node["core_concept"] for node in children_nodes]
                     
                     # 调用 LLM 分析同一父节点下 Level 3 之间的依赖关系
@@ -1122,7 +1230,7 @@ async def build_dependency_edges(
                         level_3_concepts,
                         level=3,
                         textbook_name=textbook_name,
-                        parent_concept=parent_concept,
+                        parent_concept=parent_concept_name,
                         client=client,
                         model=model,
                         api_endpoint=api_endpoint,
@@ -1134,20 +1242,20 @@ async def build_dependency_edges(
                         source_concept = dep["source"]
                         target_concept = dep["target"]
                         
-                        if source_concept in concept_to_node_id and target_concept in concept_to_node_id:
-                            source_id = concept_to_node_id[source_concept]
-                            target_id = concept_to_node_id[target_concept]
-                            
-                            # 检查是否会形成循环
-                            temp_graph.add_edge(source_id, target_id)
-                            if not nx.is_directed_acyclic_graph(temp_graph):
-                                # 如果形成循环，移除这条边
-                                temp_graph.remove_edge(source_id, target_id)
-                                cycles_detected += 1
-                                print(f"[依赖构建] ⚠ 检测到循环依赖（已避免）: {source_concept} -> {target_concept}")
-                            else:
-                                all_edges.append((source_id, target_id))
-                                level_3_edges += 1
+                        # 确保节点存在（如果不存在则自动创建，使用当前父节点）
+                        source_id = _ensure_node_exists(source_concept, level=3, parent_concept=parent_concept_name)
+                        target_id = _ensure_node_exists(target_concept, level=3, parent_concept=parent_concept_name)
+                        
+                        # 检查是否会形成循环
+                        temp_graph.add_edge(source_id, target_id)
+                        if not nx.is_directed_acyclic_graph(temp_graph):
+                            # 如果形成循环，移除这条边
+                            temp_graph.remove_edge(source_id, target_id)
+                            cycles_detected += 1
+                            print(f"[依赖构建] ⚠ 检测到循环依赖（已避免）: {source_concept} -> {target_concept}")
+                        else:
+                            all_edges.append((source_id, target_id))
+                            level_3_edges += 1
         
         # ========== 4. 批量更新到数据库 ==========
         print(f"[依赖构建] 更新依赖关系到数据库...")

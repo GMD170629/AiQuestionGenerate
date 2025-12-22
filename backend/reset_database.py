@@ -173,8 +173,8 @@ EXPECTED_TABLES = {
                 chunk_id INTEGER NOT NULL,
                 file_id TEXT NOT NULL,
                 core_concept TEXT NOT NULL,
-                level INTEGER NOT NULL DEFAULT 3 CHECK(level >= 1 AND level <= 3),
-                parent_id TEXT,
+                level INTEGER NOT NULL DEFAULT 3 CHECK(level >= 1 AND level <= 3),  -- 已废弃：不再使用层级结构
+                parent_id TEXT,  -- 已废弃：不再使用层级结构
                 prerequisites_json TEXT NOT NULL DEFAULT '[]',
                 confusion_points_json TEXT NOT NULL DEFAULT '[]',
                 bloom_level INTEGER NOT NULL CHECK(bloom_level >= 1 AND bloom_level <= 6),
@@ -237,8 +237,9 @@ EXPECTED_INDEXES = [
     ("idx_knowledge_nodes_chunk_id", "knowledge_nodes", "chunk_id"),
     ("idx_knowledge_nodes_file_id", "knowledge_nodes", "file_id"),
     ("idx_knowledge_nodes_bloom_level", "knowledge_nodes", "bloom_level"),
-    ("idx_knowledge_nodes_level", "knowledge_nodes", "level"),
-    ("idx_knowledge_nodes_parent_id", "knowledge_nodes", "parent_id"),
+    # 已废弃的索引（level 和 parent_id 字段不再使用）
+    # ("idx_knowledge_nodes_level", "knowledge_nodes", "level"),
+    # ("idx_knowledge_nodes_parent_id", "knowledge_nodes", "parent_id"),
     ("idx_knowledge_dependencies_source", "knowledge_dependencies", "source_node_id"),
     ("idx_knowledge_dependencies_target", "knowledge_dependencies", "target_node_id"),
 ]

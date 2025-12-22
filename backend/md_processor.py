@@ -830,14 +830,11 @@ async def extract_and_store_knowledge_nodes(file_id: str,
                 node_id = str(uuid.uuid4())
                 
                 # 存储知识点节点（不包含 prerequisites，确保知识点独立）
-                # 默认设置为 level 3（三级原子点），parent_id 为 None（后续可构建层级关系）
                 success = db.store_knowledge_node(
                     node_id=node_id,
                     chunk_id=chunk_id,
                     file_id=file_id,
                     core_concept=core_concept,
-                    level=3,  # 默认三级原子点
-                    parent_id=None,  # 后续可构建层级关系
                     prerequisites=[],  # 知识点应该是独立的，不包含前置依赖
                     confusion_points=knowledge_data.get("confusion_points", []),
                     bloom_level=knowledge_data["bloom_level"],

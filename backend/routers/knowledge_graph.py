@@ -2,6 +2,7 @@
 知识图谱相关路由
 """
 
+import json
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -405,5 +406,79 @@ async def get_concept_questions(concept_name: str):
             error_msg = repr(e) if hasattr(e, '__repr__') else "获取题目失败"
         except (UnicodeEncodeError, UnicodeDecodeError):
             error_msg = "获取题目失败"
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.get("/knowledge-list")
+async def get_knowledge_list(
+    file_id: Optional[str] = Query(None, description="文件 ID（可选，如果提供则只返回该文件的知识点）"),
+    textbook_id: Optional[str] = Query(None, description="教材 ID（可选，如果提供则返回该教材的所有知识点）")
+):
+    """
+    获取知识点列表（表格展示用，不包含 level、parent_id 等层级信息）
+    
+    Args:
+        file_id: 文件 ID（可选）
+        textbook_id: 教材 ID（可选）
+        
+    Returns:
+        知识点列表，包含：node_id, core_concept, bloom_level, confusion_points, application_scenarios, file_id, created_at
+    """
+    try:
+        # 如果指定了 file_id，只返回该文件的知识点
+        if file_id:
+            nodes = db.get_file_knowledge_nodes(file_id)
+        # 如果指定了 textbook_id，返回该教材的所有知识点
+        elif textbook_id:
+            nodes = db.get_textbook_knowledge_nodes(textbook_id)
+        else:
+            # 获取所有知识点
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT node_id, chunk_id, file_id, core_concept,
+                           prerequisites_json, confusion_points_json, bloom_level, 
+                           application_scenarios_json, created_at
+                    FROM knowledge_nodes
+                    ORDER BY created_at DESC
+                """)
+                rows = cursor.fetchall()
+                nodes = []
+                for row in rows:
+                    nodes.append({
+                        "node_id": row["node_id"],
+                        "chunk_id": row["chunk_id"],
+                        "file_id": row["file_id"],
+                        "core_concept": row["core_concept"],
+                        "prerequisites": json.loads(row["prerequisites_json"]) if row["prerequisites_json"] else [],
+                        "confusion_points": json.loads(row["confusion_points_json"]) if row["confusion_points_json"] else [],
+                        "bloom_level": row["bloom_level"],
+                        "application_scenarios": json.loads(row["application_scenarios_json"]) if row["application_scenarios_json"] else None,
+                        "created_at": row["created_at"]
+                    })
+        
+        # 移除 level 和 parent_id 字段
+        knowledge_list = []
+        for node in nodes:
+            knowledge_list.append({
+                "node_id": node["node_id"],
+                "core_concept": node["core_concept"],
+                "bloom_level": node["bloom_level"],
+                "confusion_points": node.get("confusion_points", []),
+                "application_scenarios": node.get("application_scenarios") or [],
+                "file_id": node["file_id"],
+                "created_at": node["created_at"]
+            })
+        
+        return JSONResponse(content={
+            "knowledge_list": knowledge_list,
+            "total": len(knowledge_list)
+        })
+        
+    except Exception as e:
+        try:
+            error_msg = repr(e) if hasattr(e, '__repr__') else "获取知识点列表失败"
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            error_msg = "获取知识点列表失败"
         raise HTTPException(status_code=500, detail=error_msg)
 

@@ -14,7 +14,7 @@ from schemas import (
     FileToTextbook,
     FileOrderUpdate
 )
-from graph_manager import reconstruct_hierarchy
+from md_processor import build_textbook_knowledge_dependencies
 
 router = APIRouter(prefix="/textbooks", tags=["教材管理"])
 
@@ -293,20 +293,20 @@ async def update_file_order(
 @router.post("/{textbook_id}/build-dependencies")
 async def build_knowledge_dependencies(textbook_id: str):
     """
-    重构教材知识点的层级结构
+    为教材下的所有知识点构建依赖关系
     
-    使用 LLM 分析教材下所有知识点，按照计算机学科逻辑划分为三个层级：
-    - Level 1 (Global): 一级全局知识点（如"内存管理"、"进程管理"）
-    - Level 2 (Chapter): 二级章节知识点（如"虚拟内存"、"页面置换算法"）
-    - Level 3 (Unit): 三级原子知识点（如"TLB 快表"、"LRU 算法细节"）
-    
-    然后根据分类结果，自动为二级节点指定一级父节点，为三级节点指定二级父节点。
+    使用 LLM 分析教材下所有知识点之间的依赖关系（prerequisites 和 dependents），
+    并将结果存储到数据库的 prerequisites_json 字段中。
     
     Args:
         textbook_id: 教材 ID
         
     Returns:
-        重构结果
+        构建结果，包含：
+        - success: 是否成功
+        - total_concepts: 知识点总数
+        - dependencies_built: 构建的依赖关系数量
+        - message: 结果消息
     """
     try:
         # 检查教材是否存在
@@ -314,31 +314,28 @@ async def build_knowledge_dependencies(textbook_id: str):
         if not textbook:
             raise HTTPException(status_code=404, detail="教材不存在")
         
-        # 调用层级重构函数
-        result = await reconstruct_hierarchy(textbook_id)
+        # 调用依赖关系构建函数
+        result = await build_textbook_knowledge_dependencies(textbook_id)
         
         if not result.get("success"):
             raise HTTPException(
                 status_code=400,
-                detail=result.get("message", "层级重构失败")
+                detail=result.get("message", "依赖关系构建失败")
             )
         
         return JSONResponse(content={
-            "message": result.get("message", "层级重构成功"),
+            "message": result.get("message", "依赖关系构建成功"),
             "textbook_id": textbook_id,
             "total_concepts": result.get("total_concepts", 0),
-            "level_1_count": result.get("level_1_count", 0),
-            "level_2_count": result.get("level_2_count", 0),
-            "level_3_count": result.get("level_3_count", 0),
-            "relationships_built": result.get("relationships_built", 0),
-            "missing_concepts": result.get("missing_concepts", 0)
+            "dependencies_built": result.get("dependencies_built", 0)
         })
     except HTTPException:
         raise
     except Exception as e:
         try:
-            error_msg = repr(e) if hasattr(e, '__repr__') else "层级重构失败"
+            error_msg = repr(e) if hasattr(e, '__repr__') else "依赖关系构建失败"
         except (UnicodeEncodeError, UnicodeDecodeError):
-            error_msg = "层级重构失败"
-        raise HTTPException(status_code=500, detail=f"层级重构失败: {error_msg}")
+            error_msg = "依赖关系构建失败"
+        raise HTTPException(status_code=500, detail=f"依赖关系构建失败: {error_msg}")
+
 

@@ -29,7 +29,7 @@ export default function KnowledgeMapPage() {
   const [selectedTextbookId, setSelectedTextbookId] = useState<string>('')
   const [selectedFileId, setSelectedFileId] = useState<string>('')
   const [loading, setLoading] = useState(true)
-  const [refreshKey, setRefreshKey] = useState(0) // 用于强制刷新知识地图
+  const [refreshKey, setRefreshKey] = useState(0) // 用于强制刷新知识点列表
 
   useEffect(() => {
     const fetchData = async () => {
@@ -57,8 +57,8 @@ export default function KnowledgeMapPage() {
     fetchData()
   }, [])
 
-  const handleNodeClick = (node: any) => {
-    console.log('点击节点:', node)
+  const handleNodeClick = (item: any) => {
+    console.log('点击知识点:', item)
     // 可以在这里添加跳转到题目列表的逻辑
   }
 
@@ -68,10 +68,10 @@ export default function KnowledgeMapPage() {
         <div className="mb-6 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-2">
-              知识地图
+              知识点列表
             </h1>
             <p className="text-slate-600 dark:text-slate-400">
-              可视化展示教材知识点的三层图谱结构：一级全局概念、二级章节概念、三级原子知识点，以及它们之间的层级关系和横向依赖关系
+              查看和管理所有已提取的知识点
             </p>
           </div>
           <button
@@ -140,7 +140,7 @@ export default function KnowledgeMapPage() {
           </div>
         </div>
 
-        {/* 知识地图 */}
+        {/* 知识点列表 */}
         {loading ? (
           <div className="flex items-center justify-center h-96">
             <div className="text-center">
@@ -149,7 +149,7 @@ export default function KnowledgeMapPage() {
             </div>
           </div>
         ) : (
-          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm p-6" style={{ minHeight: '700px' }}>
+          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm p-6">
             <KnowledgeMap
               key={refreshKey} // 使用 key 强制重新渲染
               fileId={selectedFileId || undefined}

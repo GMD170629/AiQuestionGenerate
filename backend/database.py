@@ -1626,10 +1626,9 @@ class Database:
     # ========== 知识点节点相关方法 ==========
     
     def store_knowledge_node(self, node_id: str, chunk_id: int, file_id: str,
-                            core_concept: str, level: int, prerequisites: List[str],
+                            core_concept: str, prerequisites: List[str],
                             confusion_points: List[str], bloom_level: int,
-                            application_scenarios: Optional[List[str]] = None,
-                            parent_id: Optional[str] = None) -> bool:
+                            application_scenarios: Optional[List[str]] = None) -> bool:
         """
         存储知识点节点
         
@@ -1638,12 +1637,10 @@ class Database:
             chunk_id: 关联的切片 ID
             file_id: 所属文件 ID
             core_concept: 核心概念
-            level: 知识点层级（1-一级全局，2-二级章节，3-三级原子点）
             prerequisites: 前置依赖知识点列表（已废弃，保留用于兼容）
             confusion_points: 学生易错点列表
             bloom_level: Bloom 认知层级（1-6）
             application_scenarios: 应用场景列表（可选）
-            parent_id: 父节点 ID（可选，用于构建层级关系）
             
         Returns:
             是否成功存储
@@ -1657,13 +1654,14 @@ class Database:
             application_scenarios_json = json.dumps(application_scenarios, ensure_ascii=False) if application_scenarios else None
             
             try:
+                # level 和 parent_id 字段保留在数据库中但不再使用，使用默认值
                 cursor.execute("""
                     INSERT OR REPLACE INTO knowledge_nodes 
                     (node_id, chunk_id, file_id, core_concept, level, parent_id,
                      prerequisites_json, confusion_points_json, bloom_level, 
                      application_scenarios_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (node_id, chunk_id, file_id, core_concept, level, parent_id,
+                    VALUES (?, ?, ?, ?, 3, NULL, ?, ?, ?, ?, ?)
+                """, (node_id, chunk_id, file_id, core_concept,
                       prerequisites_json, confusion_points_json, bloom_level, 
                       application_scenarios_json, now))
                 conn.commit()
@@ -1698,8 +1696,6 @@ class Database:
                     "chunk_id": row["chunk_id"],
                     "file_id": row["file_id"],
                     "core_concept": row["core_concept"],
-                    "level": row["level"] if "level" in row else 3,  # 兼容旧数据，默认为3
-                    "parent_id": row["parent_id"] if "parent_id" in row else None,
                     "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row and row["prerequisites_json"] else [],
                     "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row and row["confusion_points_json"] else [],
                     "bloom_level": row["bloom_level"],
@@ -1736,8 +1732,6 @@ class Database:
                     "chunk_id": row["chunk_id"],
                     "file_id": row["file_id"],
                     "core_concept": row["core_concept"],
-                    "level": row["level"] if "level" in row.keys() else 3,  # 兼容旧数据
-                    "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
                     "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row.keys() and row["prerequisites_json"] else [],
                     "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row.keys() and row["confusion_points_json"] else [],
                     "bloom_level": row["bloom_level"],
@@ -1764,7 +1758,7 @@ class Database:
                        application_scenarios_json, created_at
                 FROM knowledge_nodes
                 WHERE file_id = ?
-                ORDER BY level ASC, created_at ASC
+                ORDER BY created_at ASC
             """, (file_id,))
             rows = cursor.fetchall()
             nodes = []
@@ -1774,8 +1768,6 @@ class Database:
                     "chunk_id": row["chunk_id"],
                     "file_id": row["file_id"],
                     "core_concept": row["core_concept"],
-                    "level": row["level"] if "level" in row.keys() else 3,  # 兼容旧数据
-                    "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
                     "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row.keys() and row["prerequisites_json"] else [],
                     "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row.keys() and row["confusion_points_json"] else [],
                     "bloom_level": row["bloom_level"],
@@ -1843,7 +1835,7 @@ class Database:
                        application_scenarios_json, created_at
                 FROM knowledge_nodes
                 WHERE file_id IN ({placeholders})
-                ORDER BY level ASC, created_at ASC
+                ORDER BY created_at ASC
             """, file_ids)
             rows = cursor.fetchall()
             nodes = []
@@ -1853,8 +1845,6 @@ class Database:
                     "chunk_id": row["chunk_id"],
                     "file_id": row["file_id"],
                     "core_concept": row["core_concept"],
-                    "level": row["level"] if "level" in row.keys() else 3,  # 兼容旧数据
-                    "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
                     "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row.keys() and row["prerequisites_json"] else [],
                     "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row.keys() and row["confusion_points_json"] else [],
                     "bloom_level": row["bloom_level"],
@@ -2010,44 +2000,6 @@ class Database:
             """, (node_id, node_id))
             conn.commit()
             return True
-    
-    def get_child_nodes(self, parent_id: str) -> List[Dict[str, Any]]:
-        """
-        获取节点的所有子节点（基于 parent_id）
-        
-        Args:
-            parent_id: 父节点 ID
-            
-        Returns:
-            子节点列表
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT node_id, chunk_id, file_id, core_concept, level, parent_id,
-                       prerequisites_json, confusion_points_json, bloom_level, 
-                       application_scenarios_json, created_at
-                FROM knowledge_nodes
-                WHERE parent_id = ?
-                ORDER BY level ASC, created_at ASC
-            """, (parent_id,))
-            rows = cursor.fetchall()
-            nodes = []
-            for row in rows:
-                nodes.append({
-                    "node_id": row["node_id"],
-                    "chunk_id": row["chunk_id"],
-                    "file_id": row["file_id"],
-                    "core_concept": row["core_concept"],
-                    "level": row["level"] if "level" in row.keys() else 3,
-                    "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
-                    "prerequisites": json.loads(row["prerequisites_json"]) if "prerequisites_json" in row.keys() and row["prerequisites_json"] else [],
-                    "confusion_points": json.loads(row["confusion_points_json"]) if "confusion_points_json" in row.keys() and row["confusion_points_json"] else [],
-                    "bloom_level": row["bloom_level"],
-                    "application_scenarios": json.loads(row["application_scenarios_json"]) if "application_scenarios_json" in row.keys() and row["application_scenarios_json"] else None,
-                    "created_at": row["created_at"]
-                })
-            return nodes
 
 
 # 全局数据库实例

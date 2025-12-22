@@ -175,7 +175,11 @@ async def process_full_textbook_task(task_id: str):
                     
                     try:
                         # 使用自适应模式生成题目
-                        questions_data = await generate_questions_for_chunk(chunk)
+                        textbook_name = textbook.get("name") if textbook else None
+                        questions_data = await generate_questions_for_chunk(
+                            chunk,
+                            textbook_name=textbook_name
+                        )
                         
                         if questions_data:
                             # 保存题目到数据库

@@ -1,29 +1,67 @@
 "use client"
 
 import * as React from "react"
-import * as CollapsiblePrimitive from "@radix-ui/react-collapsible"
-import { ChevronDown } from "lucide-react"
-
+import {
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  AccordionProps,
+} from '@mui/material'
+import { ExpandMore } from '@mui/icons-material'
 import { cn } from "@/lib/utils"
 
-const Collapsible = CollapsiblePrimitive.Root
+export interface CollapsibleProps extends AccordionProps {
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  trigger?: React.ReactNode
+  children?: React.ReactNode
+}
 
-const CollapsibleTrigger = CollapsiblePrimitive.Trigger
+const Collapsible = React.forwardRef<HTMLDivElement, CollapsibleProps>(
+  ({ open, onOpenChange, trigger, children, className, ...props }, ref) => {
+    const [expanded, setExpanded] = React.useState(open ?? false)
 
-const CollapsibleContent = React.forwardRef<
-  React.ElementRef<typeof CollapsiblePrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof CollapsiblePrimitive.Content>
->(({ className, ...props }, ref) => (
-  <CollapsiblePrimitive.Content
-    ref={ref}
-    className={cn(
-      "overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down transition-all duration-200",
-      className
-    )}
-    {...props}
-  />
-))
-CollapsibleContent.displayName = CollapsiblePrimitive.Content.displayName
+    React.useEffect(() => {
+      if (open !== undefined) {
+        setExpanded(open)
+      }
+    }, [open])
+
+    const handleChange = (_event: React.SyntheticEvent, isExpanded: boolean) => {
+      setExpanded(isExpanded)
+      onOpenChange?.(isExpanded)
+    }
+
+    return (
+      <Accordion
+        ref={ref}
+        expanded={expanded}
+        onChange={handleChange}
+        className={cn(className)}
+        {...props}
+      >
+        {trigger && (
+          <AccordionSummary expandIcon={<ExpandMore />}>
+            {trigger}
+          </AccordionSummary>
+        )}
+        <AccordionDetails>
+          {children}
+        </AccordionDetails>
+      </Accordion>
+    )
+  }
+)
+Collapsible.displayName = "Collapsible"
+
+const CollapsibleTrigger = ({ children, ...props }: any) => {
+  return <>{children}</>
+}
+CollapsibleTrigger.displayName = "CollapsibleTrigger"
+
+const CollapsibleContent = ({ children, ...props }: any) => {
+  return <>{children}</>
+}
+CollapsibleContent.displayName = "CollapsibleContent"
 
 export { Collapsible, CollapsibleTrigger, CollapsibleContent }
-

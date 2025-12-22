@@ -138,13 +138,13 @@ class Question(BaseModel):
             if len(self.test_cases.input_cases) != len(self.test_cases.output_cases):
                 raise ValueError(f"编程题的输入用例数量（{len(self.test_cases.input_cases)}）和输出用例数量（{len(self.test_cases.output_cases)}）必须一致")
             
-            # 建议至少3个测试用例
-            if len(self.test_cases.input_cases) < 3:
-                raise ValueError(f"编程题建议至少提供3个测试用例，当前只有{len(self.test_cases.input_cases)}个")
+            # 编程题至少需要1个测试用例
+            if len(self.test_cases.input_cases) < 1:
+                raise ValueError(f"编程题必须提供至少1个测试用例，当前只有{len(self.test_cases.input_cases)}个")
         else:
-            # 非编程题不应该有测试用例
-            if self.test_cases is not None:
-                raise ValueError(f"{self.type}不需要测试用例")
+            # 其他题目的测试用例不做限制，不做处理
+            # 允许其他题型有测试用例（向后兼容，不做验证）
+            pass
         
         # 验证答案字段
         if self.type == "单选题":

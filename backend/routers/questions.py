@@ -236,7 +236,8 @@ async def generate_questions_stream_endpoint(request: QuestionGenerationRequest)
             newline = "\n"
             while True:
                 try:
-                    status, data = await asyncio.wait_for(status_queue.get(), timeout=120.0)
+                    # 延长超时时间到30分钟，确保在 LLM 正在返回数据时不会断开连接
+                    status, data = await asyncio.wait_for(status_queue.get(), timeout=1800.0)
                     
                     if status == "start":
                         json_data = json_module.dumps({'status': 'start', 'message': data.get('message', '开始生成题目...')}, ensure_ascii=False)

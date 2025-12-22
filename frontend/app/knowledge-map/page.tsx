@@ -3,6 +3,13 @@
 import { useState, useEffect } from 'react'
 import KnowledgeMap from '@/components/KnowledgeMap'
 import { BookOpen, FileText, RefreshCw } from 'lucide-react'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 interface Textbook {
   textbook_id: string
@@ -83,21 +90,25 @@ export default function KnowledgeMapPage() {
                 <BookOpen className="inline h-4 w-4 mr-1" />
                 选择教材
               </label>
-              <select
+              <Select
                 value={selectedTextbookId}
-                onChange={(e) => {
-                  setSelectedTextbookId(e.target.value)
+                onValueChange={(value) => {
+                  setSelectedTextbookId(value)
                   setSelectedFileId('') // 清空文件选择
                 }}
-                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100"
               >
-                <option value="">全部教材</option>
-                {textbooks.map((textbook) => (
-                  <option key={textbook.textbook_id} value={textbook.textbook_id}>
-                    {textbook.name}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="全部教材" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">全部教材</SelectItem>
+                  {textbooks.map((textbook) => (
+                    <SelectItem key={textbook.textbook_id} value={textbook.textbook_id}>
+                      {textbook.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div>
@@ -105,21 +116,25 @@ export default function KnowledgeMapPage() {
                 <FileText className="inline h-4 w-4 mr-1" />
                 选择文件
               </label>
-              <select
+              <Select
                 value={selectedFileId}
-                onChange={(e) => {
-                  setSelectedFileId(e.target.value)
+                onValueChange={(value) => {
+                  setSelectedFileId(value)
                   setSelectedTextbookId('') // 清空教材选择
                 }}
-                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100"
               >
-                <option value="">全部文件</option>
-                {files.map((file) => (
-                  <option key={file.file_id} value={file.file_id}>
-                    {file.filename}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="全部文件" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">全部文件</SelectItem>
+                  {files.map((file) => (
+                    <SelectItem key={file.file_id} value={file.file_id}>
+                      {file.filename}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </div>

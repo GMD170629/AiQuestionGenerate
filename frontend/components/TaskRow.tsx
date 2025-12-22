@@ -3,11 +3,6 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronUp, Clock, Loader2, CheckCircle2, XCircle, FileText, Pause, PlayCircle, X } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
 import { useTaskStream } from '@/hooks/useTaskStream'
 
 interface Task {
@@ -268,65 +263,62 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
             
             {/* 日志查看按钮 */}
             {(task.status === 'PROCESSING' || task.status === 'PAUSED') && (
-              <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-                <CollapsibleTrigger className="flex items-center gap-1 text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors">
-                  {isOpen ? (
-                    <>
-                      <ChevronUp className="h-4 w-4" />
-                      收起日志
-                    </>
-                  ) : (
-                    <>
-                      <ChevronDown className="h-4 w-4" />
-                      查看日志
-                    </>
-                  )}
-                </CollapsibleTrigger>
-              </Collapsible>
+              <button
+                onClick={() => setIsOpen(!isOpen)}
+                className="flex items-center gap-1 text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors"
+              >
+                {isOpen ? (
+                  <>
+                    <ChevronUp className="h-4 w-4" />
+                    收起日志
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="h-4 w-4" />
+                    查看日志
+                  </>
+                )}
+              </button>
             )}
           </div>
         </td>
       </tr>
-      {(task.status === 'PROCESSING' || task.status === 'PAUSED') && (
+      {(task.status === 'PROCESSING' || task.status === 'PAUSED') && isOpen && (
         <tr>
           <td colSpan={8} className="p-0">
-            <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-              <CollapsibleContent>
-                <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
-                  <div className="flex items-center gap-2 mb-2">
-                    <FileText className="h-4 w-4 text-slate-500" />
-                    <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                      实时处理日志
-                    </span>
-                    {isConnected && (
-                      <span className="text-xs text-blue-500 flex items-center gap-1">
-                        <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                        已连接
-                      </span>
-                    )}
-                  </div>
-                  {logs.length === 0 ? (
-                    <div className="text-sm text-slate-500 dark:text-slate-400 py-2">
-                      暂无日志
-                    </div>
-                  ) : (
-                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                      {logs.map((log, index) => (
-                        <div
-                          key={`${log.timestamp}-${index}`}
-                          className={`text-xs ${getLogTypeColor(log.type)} flex items-start gap-2 py-1`}
-                        >
-                          <span className="text-slate-400 dark:text-slate-500 min-w-[60px]">
-                            {formatLogTime(log.timestamp)}
-                          </span>
-                          <span className="flex-1">{log.message}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+            <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
+              <div className="flex items-center gap-2 mb-2">
+                <FileText className="h-4 w-4 text-slate-500" />
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  实时处理日志
+                </span>
+                {isConnected && (
+                  <span className="text-xs text-blue-500 flex items-center gap-1">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                    已连接
+                  </span>
+                )}
+              </div>
+              {logs.length === 0 ? (
+                <div className="text-sm text-slate-500 dark:text-slate-400 py-2">
+                  暂无日志
                 </div>
-              </CollapsibleContent>
-            </Collapsible>
+              ) : (
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {logs.map((log, index) => (
+                    <div
+                      key={`${log.timestamp}-${index}`}
+                      className={`text-xs ${getLogTypeColor(log.type)} flex items-start gap-2 py-1`}
+                    >
+                      <span className="text-slate-400 dark:text-slate-500 min-w-[60px]">
+                        {formatLogTime(log.timestamp)}
+                      </span>
+                      <span className="flex-1">{log.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </td>
         </tr>
       )}

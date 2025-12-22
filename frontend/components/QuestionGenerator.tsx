@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Input } from '@/components/ui/input'
 
 interface FileInfo {
   file_id: string
@@ -267,14 +268,14 @@ export default function QuestionGenerator({ file, onGenerateSuccess, onClose }: 
             每种题型生成数量
           </label>
           <div className="flex items-center gap-4">
-            <input
+            <Input
               type="number"
               min="1"
               max="50"
               value={questionCount}
               onChange={(e) => setQuestionCount(parseInt(e.target.value) || 1)}
               disabled={isGenerating}
-              className="input w-28"
+              className="w-28"
             />
             <span className="text-sm text-slate-600 dark:text-slate-400 font-medium">
               范围：1-50（实际生成数量会根据内容自动调整）

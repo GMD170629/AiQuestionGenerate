@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from database import db
-from routers import config, files, questions, textbooks, tasks, question_library, knowledge_graph, knowledge_extraction
+from routers import config, files, questions, textbooks, tasks, question_library, knowledge_graph, knowledge_extraction, test_generation
 
 # 创建 FastAPI 应用
 app = FastAPI(title="AI 计算机教材习题生成器", version="1.0.0")
@@ -31,6 +31,7 @@ app.include_router(textbooks.router)
 app.include_router(tasks.router)
 app.include_router(knowledge_graph.router)
 app.include_router(knowledge_extraction.router)
+app.include_router(test_generation.router)
 
 # 注册开发模式路由（仅在开发模式下可用）
 import os

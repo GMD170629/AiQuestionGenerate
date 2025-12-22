@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Settings, Save, AlertCircle, CheckCircle2, Trash2, Code, AlertTriangle } from 'lucide-react'
-import { API_BASE_URL } from '@/lib/api'
+import { getApiUrl } from '@/lib/api'
 
 interface AIConfig {
   api_endpoint: string
@@ -32,7 +32,7 @@ export default function SettingsPage() {
   const fetchConfig = async () => {
     try {
       setLoading(true)
-      const response = await fetch(`${API_BASE_URL}/config/ai`)
+      const response = await fetch(getApiUrl('/config/ai'))
       if (response.ok) {
         const data = await response.json()
         setConfig(data)
@@ -48,7 +48,7 @@ export default function SettingsPage() {
 
   const checkDevMode = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/dev/status`)
+      const response = await fetch(getApiUrl('/dev/status'))
       if (response.ok) {
         const data = await response.json()
         setDevMode(data.dev_mode || false)
@@ -64,7 +64,7 @@ export default function SettingsPage() {
       setSaving(true)
       setMessage(null)
       
-      const response = await fetch(`${API_BASE_URL}/config/ai`, {
+      const response = await fetch(getApiUrl('/config/ai'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -96,7 +96,7 @@ export default function SettingsPage() {
       setClearing(true)
       setMessage(null)
       
-      const response = await fetch(`${API_BASE_URL}/dev/clear-all`, {
+      const response = await fetch(getApiUrl('/dev/clear-all'), {
         method: 'POST',
       })
 

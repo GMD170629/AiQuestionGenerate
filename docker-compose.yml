@@ -36,7 +36,10 @@ services:
       - /app/.next
     environment:
       - NODE_ENV=development
-      - NEXT_PUBLIC_API_URL=${API_URL}
+      # 后端地址用于 Next.js rewrites 代理（服务端使用）
+      - BACKEND_URL=http://backend:8000
+      # 如果需要禁用代理模式，可以设置 NEXT_PUBLIC_API_URL（客户端直接访问）
+      - NEXT_PUBLIC_API_URL=${API_URL:-}
     depends_on:
       - backend
     restart: unless-stopped

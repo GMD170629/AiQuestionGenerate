@@ -558,6 +558,28 @@ async def reconstruct_hierarchy(
         total_concepts = len(knowledge_nodes)
         print(f"[层级重构] 开始为教材 {textbook_name} 重构层级结构，共 {total_concepts} 个知识点")
         
+        # 清空教材原有的所有知识点关系（parent_id）
+        print(f"[层级重构] 清空教材原有的知识点关系...")
+        with db._get_connection() as conn:
+            cursor = conn.cursor()
+            # 获取教材的所有文件
+            textbook_files = db.get_textbook_files(textbook_id)
+            file_ids = [f["file_id"] for f in textbook_files]
+            
+            if file_ids:
+                # 使用占位符构建 SQL
+                placeholders = ",".join(["?"] * len(file_ids))
+                cursor.execute(f"""
+                    UPDATE knowledge_nodes
+                    SET parent_id = NULL
+                    WHERE file_id IN ({placeholders})
+                """, file_ids)
+                cleared_count = cursor.rowcount
+                conn.commit()
+                print(f"[层级重构] ✓ 已清空 {cleared_count} 个知识点的 parent_id")
+            else:
+                print(f"[层级重构] ⚠ 警告：教材没有关联的文件，无法清空关系")
+        
         # 提取所有概念名称
         concept_names = [node["core_concept"] for node in knowledge_nodes]
         concept_to_node = {node["core_concept"]: node for node in knowledge_nodes}
@@ -644,12 +666,18 @@ async def reconstruct_hierarchy(
 }
 ```
 
-**重要要求：**
-1. 必须返回所有知识点，不能遗漏任何知识点
-2. 每个 Level 2 知识点必须指定一个 Level 1 父节点
-3. 每个 Level 3 知识点必须指定一个 Level 2 父节点
-4. 父节点名称必须与输入列表中的知识点名称完全一致
-5. 如果某个知识点无法明确分类，请根据其内容特征选择最合适的层级"""
+**重要要求（必须严格遵守）：**
+1. **必须返回所有知识点**，不能遗漏任何知识点
+2. **每个 Level 2 知识点必须指定一个 Level 1 父节点**，parent 字段不能为空，且必须是 level_1 数组中的某个知识点
+3. **每个 Level 3 知识点必须指定一个 Level 2 父节点**，parent 字段不能为空，且必须是 level_2 数组中的某个知识点
+4. **父节点名称必须与输入列表中的知识点名称完全一致**，不能使用变体或相似名称
+5. 如果某个知识点无法明确分类，请根据其内容特征选择最合适的层级
+6. **不允许跳过父节点指定**：Level 2 不能没有 parent，Level 3 不能没有 parent
+
+**特别注意**：
+- Level 2 的 parent 必须是 Level 1 的知识点
+- Level 3 的 parent 必须是 Level 2 的知识点
+- 如果无法确定合适的父节点，请选择最接近的、最相关的父节点"""
         
         # 构建用户提示词
         concepts_list_str = "\n".join([f"{i+1}. {concept}" for i, concept in enumerate(concept_names)])
@@ -661,85 +689,177 @@ async def reconstruct_hierarchy(
 **知识点列表：**
 {concepts_list_str}
 
-请仔细分析每个知识点的内容和特征，将它们合理分类到三个层级中，并建立正确的父子关系。"""
+**重要提醒**：
+1. 请仔细分析每个知识点的内容和特征，将它们合理分类到三个层级中
+2. **每个 Level 2 知识点必须指定一个 Level 1 父节点**（parent 字段不能为空）
+3. **每个 Level 3 知识点必须指定一个 Level 2 父节点**（parent 字段不能为空）
+4. 父节点名称必须与上述知识点列表中的名称完全一致
+5. 确保所有知识点都被分类，没有遗漏"""
         
-        # 准备 API 请求
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
+        # 重试机制：最多重试 3 次
+        max_retries = 3
+        retry_count = 0
+        hierarchy_data = None
+        valid_result = False
         
-        headers = {
-            "Authorization": f"Bearer {api_key.strip()}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/your-repo",
-            "X-Title": "AI Question Generator",
-        }
-        
-        # 估算需要的 tokens（保守估计）
-        estimated_tokens = len(system_prompt) + len(user_prompt) + total_concepts * 50 + 2000
-        max_tokens = get_max_output_tokens(model, "knowledge_extraction")
-        max_tokens = min(max_tokens, max(estimated_tokens, 4000))
-        
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.3,  # 降低温度，提高分类准确性
-            "max_tokens": max_tokens,
-        }
-        
-        print(f"[层级重构] 调用 LLM API 进行分类，使用模型: {model}")
-        
-        # 调用 API
-        timeout_config = get_timeout_config(model, is_stream=False)
-        async with httpx.AsyncClient(timeout=timeout_config) as http_client:
-            response = await http_client.post(
-                client.api_endpoint,
-                headers=headers,
-                json=payload
-            )
-            response.raise_for_status()
+        while retry_count < max_retries and not valid_result:
+            if retry_count > 0:
+                print(f"[层级重构] 第 {retry_count + 1} 次重试（共 {max_retries} 次）...")
+                # 在重试时，增强提示词的严格性
+                retry_user_prompt = f"""{user_prompt}
+
+**重试要求**：
+请特别注意：每个 Level 2 知识点必须有一个有效的 Level 1 父节点，每个 Level 3 知识点必须有一个有效的 Level 2 父节点。
+如果之前的结果中某些知识点没有指定父节点，请务必在本次返回中为它们指定正确的父节点。"""
+            else:
+                retry_user_prompt = user_prompt
             
-            result = response.json()
+            # 准备 API 请求
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": retry_user_prompt}
+            ]
             
-            if "choices" not in result or len(result["choices"]) == 0:
-                return {
-                    "success": False,
-                    "total_concepts": total_concepts,
-                    "level_1_count": 0,
-                    "level_2_count": 0,
-                    "level_3_count": 0,
-                    "relationships_built": 0,
-                    "message": "API 返回结果中没有 choices 字段"
-                }
+            headers = {
+                "Authorization": f"Bearer {api_key.strip()}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/your-repo",
+                "X-Title": "AI Question Generator",
+            }
             
-            generated_text = result["choices"][0]["message"]["content"].strip()
+            # 估算需要的 tokens（保守估计）
+            estimated_tokens = len(system_prompt) + len(retry_user_prompt) + total_concepts * 50 + 2000
+            max_tokens = get_max_output_tokens(model, "knowledge_extraction")
+            max_tokens = min(max_tokens, max(estimated_tokens, 4000))
             
-            # 清理代码块标记
-            if generated_text.startswith("```json"):
-                generated_text = generated_text[7:].strip()
-            elif generated_text.startswith("```"):
-                generated_text = generated_text[3:].strip()
-            if generated_text.endswith("```"):
-                generated_text = generated_text[:-3].strip()
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.3,  # 降低温度，提高分类准确性
+                "max_tokens": max_tokens,
+            }
             
-            # 解析 JSON
-            try:
-                hierarchy_data = json.loads(generated_text)
-            except json.JSONDecodeError as e:
-                print(f"[层级重构] JSON 解析失败: {e}")
-                print(f"[层级重构] 原始响应（前500字符）: {generated_text[:500]}")
-                return {
-                    "success": False,
-                    "total_concepts": total_concepts,
-                    "level_1_count": 0,
-                    "level_2_count": 0,
-                    "level_3_count": 0,
-                    "relationships_built": 0,
-                    "message": f"JSON 解析失败: {str(e)}"
-                }
+            print(f"[层级重构] 调用 LLM API 进行分类，使用模型: {model}")
+            
+            # 调用 API
+            timeout_config = get_timeout_config(model, is_stream=False)
+            async with httpx.AsyncClient(timeout=timeout_config) as http_client:
+                try:
+                    response = await http_client.post(
+                        client.api_endpoint,
+                        headers=headers,
+                        json=payload
+                    )
+                    response.raise_for_status()
+                    
+                    result = response.json()
+                    
+                    if "choices" not in result or len(result["choices"]) == 0:
+                        print(f"[层级重构] ⚠ API 返回结果中没有 choices 字段")
+                        retry_count += 1
+                        continue
+                    
+                    generated_text = result["choices"][0]["message"]["content"].strip()
+                    
+                    # 清理代码块标记
+                    if generated_text.startswith("```json"):
+                        generated_text = generated_text[7:].strip()
+                    elif generated_text.startswith("```"):
+                        generated_text = generated_text[3:].strip()
+                    if generated_text.endswith("```"):
+                        generated_text = generated_text[:-3].strip()
+                    
+                    # 解析 JSON
+                    try:
+                        hierarchy_data = json.loads(generated_text)
+                    except json.JSONDecodeError as e:
+                        print(f"[层级重构] JSON 解析失败: {e}")
+                        print(f"[层级重构] 原始响应（前500字符）: {generated_text[:500]}")
+                        retry_count += 1
+                        continue
+                    
+                    # 验证结果的有效性
+                    level_1_items = hierarchy_data.get("level_1", [])
+                    level_2_items = hierarchy_data.get("level_2", [])
+                    level_3_items = hierarchy_data.get("level_3", [])
+                    
+                    # 提取 Level 1 的概念名称
+                    level_1_concept_set = {item.get("concept", "").strip() for item in level_1_items if item.get("concept", "").strip()}
+                    level_2_concept_set = {item.get("concept", "").strip() for item in level_2_items if item.get("concept", "").strip()}
+                    
+                    # 检查 Level 2 是否都有有效的父节点
+                    level_2_missing_parents = []
+                    for item in level_2_items:
+                        concept = item.get("concept", "").strip()
+                        parent = item.get("parent", "").strip()
+                        if not parent or parent not in level_1_concept_set:
+                            level_2_missing_parents.append(concept)
+                    
+                    # 检查 Level 3 是否都有有效的父节点
+                    level_3_missing_parents = []
+                    for item in level_3_items:
+                        concept = item.get("concept", "").strip()
+                        parent = item.get("parent", "").strip()
+                        if not parent or parent not in level_2_concept_set:
+                            level_3_missing_parents.append(concept)
+                    
+                    # 如果所有节点都有有效的父节点，验证通过
+                    if not level_2_missing_parents and not level_3_missing_parents:
+                        valid_result = True
+                        print(f"[层级重构] ✓ 验证通过：所有 Level 2 和 Level 3 知识点都有有效的父节点")
+                    else:
+                        print(f"[层级重构] ⚠ 验证失败：")
+                        if level_2_missing_parents:
+                            print(f"[层级重构]   Level 2 缺少父节点的知识点: {level_2_missing_parents}")
+                        if level_3_missing_parents:
+                            print(f"[层级重构]   Level 3 缺少父节点的知识点: {level_3_missing_parents}")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            print(f"[层级重构] 将进行第 {retry_count + 1} 次重试...")
+                        continue
+                        
+                except httpx.HTTPStatusError as e:
+                    print(f"[层级重构] ⚠ HTTP 请求失败: {e.response.status_code}")
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        return {
+                            "success": False,
+                            "total_concepts": total_concepts,
+                            "level_1_count": 0,
+                            "level_2_count": 0,
+                            "level_3_count": 0,
+                            "relationships_built": 0,
+                            "message": f"HTTP 请求失败: {e.response.status_code}"
+                        }
+                    continue
+                except Exception as e:
+                    print(f"[层级重构] ⚠ API 调用异常: {e}")
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        return {
+                            "success": False,
+                            "total_concepts": total_concepts,
+                            "level_1_count": 0,
+                            "level_2_count": 0,
+                            "level_3_count": 0,
+                            "relationships_built": 0,
+                            "message": f"API 调用失败: {str(e)}"
+                        }
+                    continue
         
-        # 验证和提取分类结果
+        # 如果重试后仍然无效，返回错误
+        if not valid_result or not hierarchy_data:
+            return {
+                "success": False,
+                "total_concepts": total_concepts,
+                "level_1_count": 0,
+                "level_2_count": 0,
+                "level_3_count": 0,
+                "relationships_built": 0,
+                "message": f"经过 {max_retries} 次重试，仍无法获得有效的层级分类结果（部分知识点缺少有效的父节点）"
+            }
+        
+        # 验证和提取分类结果（此时已验证所有 Level 2 和 Level 3 都有有效的父节点）
         level_1_items = hierarchy_data.get("level_1", [])
         level_2_items = hierarchy_data.get("level_2", [])
         level_3_items = hierarchy_data.get("level_3", [])
@@ -757,7 +877,7 @@ async def reconstruct_hierarchy(
                 concept_to_level[concept] = 1
                 concept_to_parent[concept] = None
         
-        # 处理 Level 2
+        # 处理 Level 2（已验证所有 Level 2 都有有效的 Level 1 父节点）
         level_2_concepts = []
         for item in level_2_items:
             concept = item.get("concept", "").strip()
@@ -765,16 +885,15 @@ async def reconstruct_hierarchy(
             if concept and concept in concept_to_node:
                 level_2_concepts.append(concept)
                 concept_to_level[concept] = 2
-                # 验证父节点是否存在且是 Level 1
+                # 此时 parent 应该都有效（因为已经验证过）
                 if parent and parent in concept_to_node and parent in level_1_concepts:
                     concept_to_parent[concept] = parent
                 else:
-                    # 如果父节点不存在或不是 Level 1，设置为 None（后续可以手动调整）
-                    if parent:
-                        print(f"[层级重构] ⚠ 警告：Level 2 知识点 '{concept}' 的父节点 '{parent}' 不存在或不是 Level 1")
+                    # 这种情况不应该发生（因为已经验证过），但为了安全起见还是处理
+                    print(f"[层级重构] ⚠ 严重警告：Level 2 知识点 '{concept}' 的父节点 '{parent}' 无效（这不应该发生，可能是验证逻辑有误）")
                     concept_to_parent[concept] = None
         
-        # 处理 Level 3
+        # 处理 Level 3（已验证所有 Level 3 都有有效的 Level 2 父节点）
         level_3_concepts = []
         for item in level_3_items:
             concept = item.get("concept", "").strip()
@@ -782,13 +901,12 @@ async def reconstruct_hierarchy(
             if concept and concept in concept_to_node:
                 level_3_concepts.append(concept)
                 concept_to_level[concept] = 3
-                # 验证父节点是否存在且是 Level 2
+                # 此时 parent 应该都有效（因为已经验证过）
                 if parent and parent in concept_to_node and parent in level_2_concepts:
                     concept_to_parent[concept] = parent
                 else:
-                    # 如果父节点不存在或不是 Level 2，设置为 None（后续可以手动调整）
-                    if parent:
-                        print(f"[层级重构] ⚠ 警告：Level 3 知识点 '{concept}' 的父节点 '{parent}' 不存在或不是 Level 2")
+                    # 这种情况不应该发生（因为已经验证过），但为了安全起见还是处理
+                    print(f"[层级重构] ⚠ 严重警告：Level 3 知识点 '{concept}' 的父节点 '{parent}' 无效（这不应该发生，可能是验证逻辑有误）")
                     concept_to_parent[concept] = None
         
         # 检查是否有遗漏的知识点

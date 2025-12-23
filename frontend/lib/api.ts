@@ -14,6 +14,9 @@ const USE_PROXY =
   process.env.NEXT_PUBLIC_USE_PROXY === 'true' ||
   !process.env.NEXT_PUBLIC_API_URL;
 
+// 判断是否使用 API 路由代理 SSE（对于流式响应，使用 API 路由更可靠）
+const USE_API_ROUTE_FOR_SSE = true;
+
 // 如果使用代理，API 基础 URL 为相对路径 /api
 // 如果不使用代理（向后兼容），则从环境变量或默认值获取
 export const API_BASE_URL = USE_PROXY
@@ -28,11 +31,22 @@ export const API_BASE_URL = USE_PROXY
 /**
  * 获取完整的 API URL
  * @param path API 路径，以 / 开头
+ * @param useApiRoute 是否使用 Next.js API 路由（用于 SSE 流式响应）
  * @returns 完整的 API URL
  */
-export function getApiUrl(path: string): string {
+export function getApiUrl(path: string, useApiRoute: boolean = false): string {
   // 确保 path 以 / 开头
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  
+  // 对于 SSE 流式响应，优先使用 API 路由
+  if (useApiRoute && USE_API_ROUTE_FOR_SSE && normalizedPath.startsWith('/tasks/') && normalizedPath.endsWith('/progress')) {
+    // 提取 taskId
+    const match = normalizedPath.match(/^\/tasks\/([^/]+)\/progress$/);
+    if (match) {
+      const taskId = match[1];
+      return `/api/tasks/${taskId}/progress`;
+    }
+  }
   
   // 如果使用代理模式，直接拼接相对路径
   if (USE_PROXY) {

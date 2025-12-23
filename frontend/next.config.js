@@ -1,6 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // 禁用 Next.js 的默认压缩，因为 SSE 流式响应不支持压缩
+  // 注意：这会影响所有路由，但对于 SSE 流式响应是必要的
+  // 如果其他路由需要压缩，可以考虑使用自定义服务器或 CDN 层面的压缩
+  compress: false,
   // 生产环境使用 standalone 输出
   ...(process.env.NODE_ENV === 'production' && { output: 'standalone' }),
   // 支持 react-syntax-highlighter

@@ -41,32 +41,46 @@ async def get_task_progress(task_id: str):
             newline = "\n"
             message = f'任务 {task_id} 不存在'
             yield f"data: {json_module.dumps({'status': 'error', 'message': message}, ensure_ascii=False)}{newline}{newline}"
-        return StreamingResponse(error_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            error_generator(), 
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # 禁用代理缓冲，确保 SSE 流实时传输
+            }
+        )
     
     async def progress_generator():
         newline = "\n"
         
         # 注册进度队列
         progress_queue = await task_progress_manager.register_queue(task_id)
+        print(f"[SSE] 任务 {task_id}: 客户端已连接，注册进度队列")
         
         try:
             # 发送初始状态（从数据库获取）
+            task_status = task.get("status", "PENDING")
             initial_state = {
                 "status": "connected",
+                "task_status": task_status,  # 任务的实际状态
                 "progress": task.get("progress", 0.0),
                 "percentage": round(task.get("progress", 0.0) * 100, 2),
                 "current_file": task.get("current_file"),
-                "status": task.get("status", "PENDING"),
                 "total_files": task.get("total_files", 0),
                 "message": "已连接到进度流",
                 "timestamp": datetime.now().isoformat()
             }
-            yield f"data: {json_module.dumps(initial_state, ensure_ascii=False)}{newline}{newline}"
+            initial_data = f"data: {json_module.dumps(initial_state, ensure_ascii=False)}{newline}{newline}"
+            print(f"[SSE] 任务 {task_id}: 发送初始状态 - {initial_data[:200]}")
+            yield initial_data
             
             # 获取最后状态（如果有）
             last_state = await task_progress_manager.get_last_state(task_id)
             if last_state:
-                yield f"data: {json_module.dumps(last_state, ensure_ascii=False)}{newline}{newline}"
+                last_state_data = f"data: {json_module.dumps(last_state, ensure_ascii=False)}{newline}{newline}"
+                print(f"[SSE] 任务 {task_id}: 发送最后状态 - {last_state_data[:200]}")
+                yield last_state_data
             
             # 持续监听进度更新
             while True:
@@ -76,15 +90,23 @@ async def get_task_progress(task_id: str):
                     
                     # 构建响应数据
                     # 如果 progress_data 中没有 status 或 status 为 None，使用 "progress"
+                    progress_status = progress_data.get("status")
+                    if not progress_status:
+                        progress_status = "progress"
+                    
                     response_data = {
                         **progress_data,
-                        "status": progress_data.get("status") or "progress"
+                        "status": progress_status
                     }
+                    
+                    # 调试日志
+                    print(f"[SSE] 任务 {task_id}: 发送进度更新 - 进度: {response_data.get('progress', 0):.2%}, 状态: {progress_status}, 消息: {response_data.get('message', '')[:50]}")
                     
                     yield f"data: {json_module.dumps(response_data, ensure_ascii=False)}{newline}{newline}"
                     
-                    # 如果任务完成或失败，结束流
-                    if progress_data.get("status") in ["COMPLETED", "FAILED"]:
+                    # 如果任务完成或失败，结束流（支持大小写）
+                    progress_status_upper = progress_status.upper() if progress_status else ""
+                    if progress_status_upper in ["COMPLETED", "FAILED", "CANCELLED"]:
                         break
                         
                 except asyncio.TimeoutError:
@@ -98,14 +120,27 @@ async def get_task_progress(task_id: str):
                     # 检查任务状态，如果已完成或失败，结束流
                     current_task = db.get_task(task_id)
                     if current_task:
-                        task_status = current_task.get("status")
-                        if task_status in ["COMPLETED", "FAILED"]:
+                        task_status = current_task.get("status", "")
+                        task_status_upper = task_status.upper() if task_status else ""
+                        if task_status_upper in ["COMPLETED", "FAILED", "CANCELLED"]:
+                            # 根据状态设置消息和进度
+                            if task_status_upper == "COMPLETED":
+                                message = "任务已完成"
+                                default_progress = 1.0
+                            elif task_status_upper == "FAILED":
+                                message = "任务失败"
+                                default_progress = 0.0
+                            else:  # CANCELLED
+                                message = "任务已取消"
+                                default_progress = current_task.get("progress", 0.0)
+                            
                             final_state = {
                                 "status": task_status.lower(),
-                                "progress": current_task.get("progress", 1.0 if task_status == "COMPLETED" else 0.0),
-                                "percentage": round(current_task.get("progress", 1.0 if task_status == "COMPLETED" else 0.0) * 100, 2),
+                                "task_status": task_status,
+                                "progress": current_task.get("progress", default_progress),
+                                "percentage": round(current_task.get("progress", default_progress) * 100, 2),
                                 "current_file": current_task.get("current_file"),
-                                "message": "任务已完成" if task_status == "COMPLETED" else "任务失败",
+                                "message": message,
                                 "timestamp": datetime.now().isoformat()
                             }
                             yield f"data: {json_module.dumps(final_state, ensure_ascii=False)}{newline}{newline}"
@@ -122,7 +157,15 @@ async def get_task_progress(task_id: str):
             # 取消注册队列
             await task_progress_manager.unregister_queue(task_id, progress_queue)
     
-    return StreamingResponse(progress_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        progress_generator(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # 禁用代理缓冲，确保 SSE 流实时传输
+        }
+    )
 
 
 @router.get("/{task_id}")

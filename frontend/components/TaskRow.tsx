@@ -141,6 +141,11 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
     : streamProgress?.status?.toUpperCase() === 'CANCELLED'
     ? 'CANCELLED'
     : task.status
+  
+  // 调试日志：显示当前状态
+  if (task.status === 'PROCESSING' || task.status === 'PAUSED') {
+    console.log(`[TaskRow] 任务 ${task.task_id}: streamProgress=`, streamProgress, 'task.progress=', task.progress, 'displayPercentage=', displayPercentage)
+  }
 
   const formatLogTime = (timestamp: string) => {
     try {

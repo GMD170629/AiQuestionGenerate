@@ -92,12 +92,14 @@ export function useTaskStream({
 
       // 使用浏览器原生 EventSource 建立 SSE 长连接
       // 这是长连接，不是循环请求，服务器会主动推送进度更新
-      const eventSource = new EventSource(
-        getApiUrl(`/tasks/${taskId}/progress`)
-      )
+      // 对于 SSE 流式响应，使用 API 路由代理
+      const apiUrl = getApiUrl(`/tasks/${taskId}/progress`, true)
+      console.log(`[SSE] 正在连接到任务进度流: ${apiUrl}`)
+      const eventSource = new EventSource(apiUrl)
       eventSourceRef.current = eventSource
 
       eventSource.onopen = () => {
+        console.log(`[SSE] 连接已建立，任务 ID: ${taskId}`)
         setIsConnected(true)
         setError(null)
         addLog('已连接到任务进度流', 'info')
@@ -107,7 +109,11 @@ export function useTaskStream({
 
       eventSource.onmessage = (event) => {
         try {
+          console.log(`[SSE] 收到消息，任务 ID: ${taskId}`, event)
+          console.log(`[SSE] 消息类型:`, event.type)
+          console.log(`[SSE] 消息数据:`, event.data)
           const data = JSON.parse(event.data)
+          console.log(`[SSE] 解析后的数据:`, data)
 
           if (data.status === 'error') {
             const errorMessage = data.message || '发生错误'
@@ -131,6 +137,7 @@ export function useTaskStream({
               timestamp: data.timestamp || new Date().toISOString(),
             }
             
+            console.log(`[SSE] 更新进度状态:`, newProgress)
             setProgress(newProgress)
 
             // 添加日志
@@ -186,7 +193,9 @@ export function useTaskStream({
       }
 
       eventSource.onerror = (err) => {
-        console.error('EventSource 错误:', err)
+        console.error(`[SSE] EventSource 错误，任务 ID: ${taskId}`, err)
+        console.error(`[SSE] EventSource readyState:`, eventSource.readyState)
+        console.error(`[SSE] EventSource URL:`, eventSource.url)
         setIsConnected(false)
         
         // 如果连接关闭，尝试重连（最多重试3次）

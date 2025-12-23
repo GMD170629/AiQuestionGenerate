@@ -102,12 +102,18 @@ class TaskProgressManager:
         async with self._lock:
             if task_id in self._task_queues:
                 queues = self._task_queues[task_id].copy()  # 复制列表以避免迭代时修改
+                queue_count = len(queues)
+                if queue_count > 0:
+                    print(f"[进度推送] 任务 {task_id}: 推送到 {queue_count} 个队列, 进度: {progress:.2%}, 状态: {status}, 消息: {message}")
                 for queue in queues:
                     try:
                         await queue.put(progress_data)
                     except Exception as e:
                         # 如果推送失败，可能是队列已关闭，忽略错误
-                        print(f"推送进度到队列失败: {e}")
+                        print(f"[进度推送] 推送进度到队列失败: {e}")
+            else:
+                # 如果没有订阅的队列，记录警告（但这是正常的，如果客户端还没连接）
+                print(f"[进度推送] 任务 {task_id}: 没有订阅的队列（客户端可能还未连接）")
     
     async def get_last_state(self, task_id: str) -> Optional[Dict[str, Any]]:
         """

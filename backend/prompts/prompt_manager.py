@@ -174,7 +174,8 @@ class PromptManager:
         adaptive: bool = False,
         bloom_level: Optional[int] = None,
         core_concept: Optional[str] = None,
-        allowed_difficulties: Optional[List[str]] = None
+        allowed_difficulties: Optional[List[str]] = None,
+        strict_plan_mode: bool = False
     ) -> str:
         """
         构建具体任务要求的提示词（用于用户提示词）
@@ -200,7 +201,6 @@ class PromptManager:
             bloom_type_requirements.append("**重要**：检测到当前知识点属于 Bloom 认知层级 Level 4 以上（应用/分析/评价/创造），请务必包含以下题型：")
             bloom_type_requirements.append("- 简答题：要求分析、比较或评价")
             bloom_type_requirements.append("- 编程题：要求实现复杂算法或解决实际问题")
-            bloom_type_requirements.append("- 综合应用题：结合多个知识点的场景描述题")
             bloom_type_requirements.append("避免生成过于简单的记忆性题目。")
         
         # 添加难度限制要求
@@ -258,16 +258,46 @@ class PromptManager:
             prompt_parts.append("\n".join(bloom_type_requirements))
             prompt_parts.append("\n")
         
+        # 严格计划模式：强调严格按照要求的题型和数量生成
+        if strict_plan_mode:
+            prompt_parts.append("**⚠️ 重要：严格计划模式**\n")
+            prompt_parts.append("请严格按照以下要求的【题型】和【数量】生成题目，不要多选或漏选：\n\n")
+        
         if len(question_types) == 1:
-            prompt_parts.append(f"请生成 {question_count} 道{question_types[0]}。")
+            if strict_plan_mode:
+                prompt_parts.append(f"**必须生成 {question_count} 道{question_types[0]}，不能多也不能少。**")
+            else:
+                prompt_parts.append(f"请生成 {question_count} 道{question_types[0]}。")
         else:
             # 说明题型分布
-            type_distribution = {}
-            for q_type in question_types:
-                type_distribution[q_type] = type_distribution.get(q_type, 0) + question_count
-            
-            distribution_text = "、".join([f"{count}道{qt}" for qt, count in type_distribution.items()])
-            prompt_parts.append(f"请生成 {distribution_text}。")
+            # 在严格计划模式下，需要明确每种题型的数量分配
+            if strict_plan_mode:
+                # 将总数量平均分配给各题型（向下取整），剩余数量分配给前几个题型
+                total_count = question_count
+                type_count = total_count // len(question_types)
+                remainder = total_count % len(question_types)
+                
+                type_distribution = {}
+                for idx, q_type in enumerate(question_types):
+                    # 前 remainder 个题型多分配1道
+                    count = type_count + (1 if idx < remainder else 0)
+                    type_distribution[q_type] = count
+                
+                distribution_text = "、".join([f"{count}道{qt}" for qt, count in type_distribution.items()])
+                prompt_parts.append(f"**必须严格按照以下题型和数量生成，总共 {total_count} 道题：**\n")
+                prompt_parts.append(f"- {distribution_text}\n")
+                prompt_parts.append(f"\n**重要**：")
+                prompt_parts.append(f"- 必须生成所有指定的题型，不能遗漏任何题型")
+                prompt_parts.append(f"- 每种题型的数量必须严格按照要求，不能多也不能少")
+                prompt_parts.append(f"- 总题目数量必须正好是 {total_count} 道，不能多也不能少")
+            else:
+                # 非严格模式：简单说明题型分布
+                type_distribution = {}
+                for q_type in question_types:
+                    type_distribution[q_type] = type_distribution.get(q_type, 0) + question_count
+                
+                distribution_text = "、".join([f"{count}道{qt}" for qt, count in type_distribution.items()])
+                prompt_parts.append(f"请生成 {distribution_text}。")
         
         return "\n".join(prompt_parts)
     

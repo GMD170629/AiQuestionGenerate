@@ -7,13 +7,17 @@ import os
 import sys
 import json
 import random
+import logging
 from typing import List, Dict, Any, Optional
 import httpx
-from models import Question, QuestionList
+from models import Question, QuestionList, ChunkGenerationPlan, TextbookGenerationPlan
 from md_processor import MarkdownProcessor
 from database import db
 from graph_manager import knowledge_graph
 from prompts import PromptManager
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 # 确保使用 UTF-8 编码
 if sys.stdout.encoding != 'utf-8':
@@ -155,8 +159,7 @@ def get_max_output_tokens(model: Optional[str] = None, task_type: str = "questio
 
 def calculate_max_tokens_for_questions(
     question_count: int,
-    model: Optional[str] = None,
-    adaptive_mode: bool = False
+    model: Optional[str] = None
 ) -> int:
     """
     计算题目生成所需的最大 tokens
@@ -164,14 +167,11 @@ def calculate_max_tokens_for_questions(
     Args:
         question_count: 题目数量
         model: 模型名称
-        adaptive_mode: 是否为自适应模式
     
     Returns:
         最大 tokens 数
     """
-    # 如果是自适应模式，按最大可能数量（10题）估算
-    estimated_count = 10 if adaptive_mode else question_count
-    estimated_tokens = estimated_count * TOKENS_PER_QUESTION
+    estimated_tokens = question_count * TOKENS_PER_QUESTION
     
     # 获取模型支持的最大输出 tokens
     model_max = get_max_output_tokens(model, "question_generation")
@@ -409,7 +409,7 @@ def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any
             if node_id:
                 result["dependency_edges"] = get_dependency_edges(node_id)
             
-            # 获取前置知识点上下文（通过知识图谱，用于向后兼容）
+            # 获取前置知识点上下文（通过知识图谱）
             if result["core_concept"]:
                 prerequisites_context = knowledge_graph.get_prerequisite_context(
                     result["core_concept"], max_depth=3, max_concepts=3
@@ -614,17 +614,19 @@ def build_task_specific_prompt(question_types: List[str], question_count: int,
                                context: Optional[str] = None, 
                                adaptive: bool = False,
                                knowledge_context: Optional[Dict[str, Any]] = None,
-                               allowed_difficulties: Optional[List[str]] = None) -> str:
+                               allowed_difficulties: Optional[List[str]] = None,
+                               strict_plan_mode: bool = False) -> str:
     """
     构建具体任务要求的提示词（用于用户提示词）
     
     Args:
-        question_types: 题型列表（如果为空且 adaptive=True，则让 AI 自主决定）
-        question_count: 每种题型的数量（如果 adaptive=True，则作为建议数量）
-        context: 教材内容上下文（用于检测是否包含代码）
-        adaptive: 是否启用自适应模式（让 AI 自主决定数量和题型）
+        question_types: 题型列表（必须指定，不能为空）
+        question_count: 题目数量
+        context: 教材内容上下文（用于检测是否包含代码，已废弃，保留用于兼容）
+        adaptive: 是否启用自适应模式（已废弃，始终为 False，保留用于兼容）
         knowledge_context: 知识点上下文（包含核心概念、Bloom层级、前置知识点等）
         allowed_difficulties: 允许的难度列表，如 ["中等", "困难"]，None 表示不限制
+        strict_plan_mode: 是否启用严格计划模式（必须严格按照要求的题型和数量生成）
         
     Returns:
         具体任务要求的提示词字符串（不包含通用规则）
@@ -645,7 +647,8 @@ def build_task_specific_prompt(question_types: List[str], question_count: int,
         adaptive=adaptive,
         bloom_level=bloom_level,
         core_concept=core_concept,
-        allowed_difficulties=allowed_difficulties
+        allowed_difficulties=allowed_difficulties,
+        strict_plan_mode=strict_plan_mode
     )
 
 
@@ -813,18 +816,25 @@ class OpenRouterClient:
         Returns:
             题目字典列表
         """
+        logger.info(f"[流式生成] 开始生成批次 - 题型: {batch_question_types}, 数量: {batch_count}, 章节: {chapter_name or '未指定'}, 重试: {retry_count}")
+        
         # 获取知识点上下文
         knowledge_context = {}
         if chunks:
             knowledge_context = extract_knowledge_from_chunks(chunks)
+            if knowledge_context.get("core_concept"):
+                logger.info(f"[流式生成] 提取到知识点 - 核心概念: {knowledge_context.get('core_concept')}")
+        
+        # 验证题型列表不能为空
+        if not batch_question_types or len(batch_question_types) == 0:
+            raise ValueError("batch_question_types 不能为空，必须指定要生成的题型")
         
         # 构建具体任务要求提示词（用于用户提示词）
-        adaptive_mode = not batch_question_types or len(batch_question_types) == 0
         task_prompt = build_task_specific_prompt(
-            batch_question_types if not adaptive_mode else [],
+            batch_question_types,
             batch_count,
             context=context,
-            adaptive=adaptive_mode,
+            adaptive=False,
             knowledge_context=knowledge_context if knowledge_context else None,
             allowed_difficulties=allowed_difficulties
         )
@@ -839,7 +849,7 @@ class OpenRouterClient:
         
         # 构建用户提示词（只包含具体任务信息）
         user_prompt = PromptManager.build_user_prompt_base(
-            adaptive=adaptive_mode,
+            adaptive=False,
             question_count=batch_count,
             chapter_name=chapter_name,
             core_concept=core_concept,
@@ -875,8 +885,7 @@ class OpenRouterClient:
         # 根据题目数量动态调整max_tokens
         max_tokens = calculate_max_tokens_for_questions(
             batch_count,
-            model=self.model,
-            adaptive_mode=adaptive_mode
+            model=self.model
         )
         
         payload = {
@@ -893,6 +902,8 @@ class OpenRouterClient:
             
             # 使用针对模型的超时配置
             timeout_config = get_timeout_config(self.model, is_stream=True)
+            logger.info(f"[流式生成] 调用API开始 - 模型: {self.model}, max_tokens: {max_tokens}")
+            
             async with httpx.AsyncClient(timeout=timeout_config) as client:
                 async with client.stream(
                     "POST",
@@ -901,6 +912,7 @@ class OpenRouterClient:
                     json=payload
                 ) as response:
                     response.raise_for_status()
+                    logger.info(f"[流式生成] API连接成功，开始接收流式数据")
                     
                     accumulated_text = ""
                     finish_reason = None
@@ -968,6 +980,7 @@ class OpenRouterClient:
                     if on_status_update:
                         on_status_update("parsing", {"message": "正在解析生成的题目..."})
                     
+                    logger.info(f"[流式生成] 流式数据接收完成，开始解析 - 文本长度: {len(accumulated_text)}")
                     generated_text = accumulated_text.strip()
                     
                     # 清理可能的代码块标记和前后空白
@@ -1025,8 +1038,9 @@ class OpenRouterClient:
                                 raise ValueError(f"无法解析 JSON 响应: {str(e)}")
                     
                     # 验证并转换题目数据
+                    logger.info(f"[流式生成] 开始解析题目数据 - 原始数据条数: {len(questions_data)}")
                     questions = []
-                    programming_question_failed = False
+                    skipped_count = 0
                     for idx, q_data in enumerate(questions_data):
                         try:
                             question = Question(**q_data)
@@ -1039,47 +1053,25 @@ class OpenRouterClient:
                                 })
                         except Exception as e:
                             error_msg = str(e)
-                            # 如果是编程题，检查是否缺少必需字段
-                            if q_data.get("type") == "编程题":
-                                # 检查是否缺少 answer 字段
-                                if "answer" in error_msg.lower() and ("missing" in error_msg.lower() or "required" in error_msg.lower() or "field required" in error_msg.lower()):
-                                    programming_question_failed = True
-                                    if on_status_update:
-                                        on_status_update("error", {
-                                            "message": "编程题生成失败：缺少 answer 字段。编程题必须提供完整的解决方案代码。"
-                                        })
-                                # 检查是否缺少 explain 字段
-                                elif "explain" in error_msg.lower() and ("missing" in error_msg.lower() or "required" in error_msg.lower() or "field required" in error_msg.lower()):
-                                    programming_question_failed = True
-                                    if on_status_update:
-                                        on_status_update("error", {
-                                            "message": "编程题生成失败：缺少 explain 字段。编程题必须提供详细的解析说明。"
-                                        })
-                                # 检查是否缺少测试用例
-                                elif "测试用例" in error_msg or "test_cases" in error_msg.lower():
-                                    programming_question_failed = True
-                                    if on_status_update:
-                                        on_status_update("error", {
-                                            "message": f"编程题生成失败：{error_msg}。编程题必须提供完整的测试用例。"
-                                        })
-                                else:
-                                    # 其他编程题错误也标记为失败
-                                    programming_question_failed = True
-                                    if on_status_update:
-                                        on_status_update("error", {
-                                            "message": f"编程题生成失败：{error_msg}"
-                                        })
-                            else:
-                                if on_status_update:
-                                    on_status_update("warning", {
-                                        "message": f"跳过无效题目数据: {error_msg}"
-                                    })
-                            continue
+                            # 如果题目验证失败，跳过该题目，继续处理下一个
+                            skipped_count += 1
+                            logger.warning(f"[流式生成] 题目数据验证失败（第 {idx + 1} 道题），跳过: {error_msg}\n题目数据: {q_data}")
+                            if on_status_update:
+                                on_status_update("warning", {
+                                    "message": f"第 {idx + 1} 道题目验证失败，已跳过: {error_msg[:100]}"
+                                })
                     
-                    # 如果编程题生成失败，抛出错误
-                    if programming_question_failed:
-                        raise ValueError("编程题生成失败：编程题必须提供以下必需字段：answer（完整的解决方案代码）、explain（详细的解析说明）和 test_cases（完整的测试用例，包括 input_cases 和 output_cases）。")
+                    # 如果所有题目都验证失败，记录警告
+                    if skipped_count > 0:
+                        logger.warning(f"[流式生成] 共跳过 {skipped_count} 道验证失败的题目，成功解析 {len(questions)} 道题目")
+                    if len(questions) == 0 and len(questions_data) > 0:
+                        logger.error(f"[流式生成] 所有题目验证失败，共 {len(questions_data)} 道题目")
+                        if on_status_update:
+                            on_status_update("warning", {
+                                "message": f"所有题目验证失败，共 {len(questions_data)} 道题目"
+                            })
                     
+                    logger.info(f"[流式生成] 批次生成完成 - 成功生成 {len(questions)} 道题目")
                     return questions
                     
         except httpx.TimeoutException:
@@ -1192,17 +1184,11 @@ class OpenRouterClient:
             all_questions = []
             for q_type, count in zip(question_types, type_counts):
                 if count > 0:
-                    try:
-                        batch_questions = await self._generate_batch_stream(
-                            context, [q_type], count, chapter_name, on_status_update, 0, chunks
-                        )
-                        all_questions.extend(batch_questions)
-                    except Exception as e:
-                        if on_status_update:
-                            on_status_update("warning", {
-                                "message": f"{q_type}生成失败: {str(e)}，跳过"
-                            })
-                        continue
+                    # 如果生成失败，直接抛出异常，不跳过
+                    batch_questions = await self._generate_batch_stream(
+                        context, [q_type], count, chapter_name, on_status_update, 0, chunks
+                    )
+                    all_questions.extend(batch_questions)
             return all_questions
         
         # 大批量题目，分批生成
@@ -1235,26 +1221,20 @@ class OpenRouterClient:
                     "message": f"正在生成第 {batch_idx}/{total_batches} 批题目（{batch_type}，{batch_count} 道）..."
                 })
             
-            try:
-                batch_questions = await self._generate_batch_stream(
-                    context, [batch_type], batch_count, chapter_name, on_status_update, 0, chunks
-                )
-                all_questions.extend(batch_questions)
-                
-                # 批次完成时发送题目数据
-                if on_status_update and batch_questions:
-                    on_status_update("batch_complete", {
-                        "batch_index": batch_idx,
-                        "total_batches": total_batches,
-                        "questions": batch_questions,
-                        "message": f"第 {batch_idx}/{total_batches} 批题目生成完成（{len(batch_questions)} 道）"
-                    })
-            except Exception as e:
-                if on_status_update:
-                    on_status_update("warning", {
-                        "message": f"第 {batch_idx} 批题目生成失败: {str(e)}，跳过该批次"
-                    })
-                continue
+            # 如果生成失败，直接抛出异常，不跳过
+            batch_questions = await self._generate_batch_stream(
+                context, [batch_type], batch_count, chapter_name, on_status_update, 0, chunks
+            )
+            all_questions.extend(batch_questions)
+            
+            # 批次完成时发送题目数据
+            if on_status_update and batch_questions:
+                on_status_update("batch_complete", {
+                    "batch_index": batch_idx,
+                    "total_batches": total_batches,
+                    "questions": batch_questions,
+                    "message": f"第 {batch_idx}/{total_batches} 批题目生成完成（{len(batch_questions)} 道）"
+                })
         
         if on_status_update:
             on_status_update("complete", {
@@ -1263,6 +1243,781 @@ class OpenRouterClient:
             })
         
         return all_questions
+
+    async def _plan_single_file(
+        self,
+        textbook_name: str,
+        file_chunks_info: List[Dict[str, Any]],
+        existing_type_distribution: Optional[Dict[str, int]] = None,
+        retry_count: int = 0
+    ) -> List[ChunkGenerationPlan]:
+        """
+        为单个文件规划题目生成任务（辅助函数）
+        
+        Args:
+            textbook_name: 教材名称
+            file_chunks_info: 单个文件的切片信息列表
+            existing_type_distribution: 已规划文件的题型分布（用于参考）
+            retry_count: 当前重试次数
+            
+        Returns:
+            该文件的切片生成计划列表
+        """
+        if not file_chunks_info:
+            return []
+        
+        # 构建切片目录信息
+        chunks_catalog = []
+        for idx, chunk_info in enumerate(file_chunks_info, 1):
+            chunk_id = chunk_info.get("chunk_id")
+            chapter_name = chunk_info.get("chapter_name", "未命名章节")
+            content_summary = chunk_info.get("content_summary", "")
+            
+            if chunk_id is None:
+                raise ValueError(f"切片信息 {idx} 缺少 chunk_id 字段")
+            
+            chunks_catalog.append({
+                "chunk_id": chunk_id,
+                "chapter_name": chapter_name,
+                "content_summary": content_summary[:500] if content_summary else ""  # 限制摘要长度
+            })
+        
+        # 构建系统提示词
+        system_prompt = """你是一个专业的计算机教材习题规划专家。你的任务是为当前文件的每个切片规划题目生成任务。
+
+## 任务要求：
+
+1. **总题量覆盖**：确保所有章节都有足够的题目覆盖，重要章节应分配更多题目。
+
+2. **题型比例均衡**：在全书范围内，各题型（单选题、多选题、判断题、填空题、简答题、编程题）的比例应该均衡。建议比例：
+   - 单选题：20-30%
+   - 多选题：15-25%
+   - 判断题：15-25%
+   - 填空题：10-20%
+   - 简答题：10-20%
+   - 编程题：10-20%
+
+3. **题目数量分配**：
+   - 每个切片根据内容深度分配 1-10 题
+   - 基础概念切片：1-3 题
+   - 中等深度切片：3-6 题
+   - 深度内容切片：6-10 题
+
+4. **题型选择原则**：
+   - 根据切片内容特点选择合适的题型
+   - 如果内容包含代码、算法，优先包含编程题或填空题
+   - 概念性内容适合使用选择题和判断题
+   - 需要详细解释的内容适合使用简答题
+
+5. **题型精确数量**：
+   - 必须为每个切片规划每种题型的精确数量
+   - type_distribution 中每种题型的数量之和必须等于 question_count
+   - 例如：如果 question_count=5，type_distribution 可以是 {"单选题": 2, "多选题": 2, "判断题": 1}
+
+## 输出格式：
+
+请严格按照以下 JSON 格式返回，不要添加任何额外的文本、说明或代码块标记：
+
+```json
+{
+  "plans": [
+    {
+      "chunk_id": 123,
+      "question_count": 5,
+      "question_types": ["单选题", "多选题", "判断题"],
+      "type_distribution": {
+        "单选题": 2,
+        "多选题": 2,
+        "判断题": 1
+      }
+    }
+  ],
+  "total_questions": 5,
+  "type_distribution": {
+    "单选题": 2,
+    "多选题": 2,
+    "判断题": 1
+  }
+}
+```
+
+**重要**：
+- 必须为每个切片生成一个计划（plans 数组长度必须等于输入的切片数量）
+- total_questions 必须等于所有切片 question_count 的总和
+- 每个切片的 question_count 必须在 1-10 之间
+- 每个切片的 question_types 至少包含一种题型
+- 每个切片的 type_distribution 必须包含该切片所有题型的精确数量，且总和等于 question_count
+- type_distribution（顶层）必须统计当前文件所有切片的题型分布总和"""
+        
+        # 构建用户提示词
+        chunks_text = "\n".join([
+            f"{idx + 1}. **切片 ID: {chunk['chunk_id']}** | **章节: {chunk['chapter_name']}**\n"
+            for idx, chunk in enumerate(chunks_catalog)
+        ])
+        
+        # 如果有已规划的题型分布，添加到提示词中
+        existing_distribution_text = ""
+        if existing_type_distribution:
+            existing_distribution_text = f"""
+
+## 已规划文件的题型分布参考：
+
+以下是从其他已规划文件中统计的题型分布，请参考这些数据来保持全书题型比例的均衡：
+
+{json.dumps(existing_type_distribution, ensure_ascii=False, indent=2)}
+
+**注意**：请参考上述题型分布，确保当前文件的规划与整体分布保持协调，避免某些题型过多或过少。"""
+        
+        user_prompt = f"""请为以下教材的当前文件规划题目生成任务：
+
+## 教材信息：
+**教材名称**：{textbook_name}
+
+## 当前文件的切片目录（共 {len(chunks_catalog)} 个切片）：
+
+{chunks_text}{existing_distribution_text}
+
+请根据以上信息，为当前文件的每个切片规划题目生成任务。确保：
+1. 总题量覆盖所有章节
+2. 与已规划文件的题型分布保持协调（如果提供了已规划分布）
+3. 每个切片根据内容深度分配 1-10 题
+
+请严格按照 JSON 格式返回，不要添加任何额外的文本、说明或代码块标记。直接返回 JSON 对象即可。"""
+        
+        # 构建请求消息
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        # 调用 OpenRouter API
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "AI Question Generator",
+        }
+        
+        # 估算 max_tokens（规划任务通常不需要太多 tokens）
+        max_tokens = min(4000, MAX_KNOWLEDGE_EXTRACTION_TOKENS)
+        
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.3,  # 规划任务使用较低温度，确保稳定性
+            "max_tokens": max_tokens,
+        }
+        
+        try:
+            # 使用针对模型的超时配置
+            timeout_config = get_timeout_config(self.model, is_stream=False)
+            async with httpx.AsyncClient(timeout=timeout_config) as client:
+                response = await client.post(
+                    self.api_endpoint,
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                # 提取生成的文本
+                if "choices" not in result or len(result["choices"]) == 0:
+                    raise ValueError("API 返回结果中没有 choices 字段")
+                
+                generated_text = result["choices"][0]["message"]["content"].strip()
+                finish_reason = result["choices"][0].get("finish_reason", "")
+                
+                # 如果 finish_reason 是 "length"，继续生成剩余内容
+                if finish_reason == "length":
+                    # 构建 payload 模板（不包含 messages）
+                    payload_template = {
+                        "model": self.model,
+                        "temperature": payload.get("temperature", 0.3),
+                        "max_tokens": payload.get("max_tokens", 4000),
+                    }
+                    
+                    # 调用续写函数
+                    generated_text = await self._continue_generation_on_length_limit(
+                        messages=messages,
+                        accumulated_text=generated_text,
+                        headers=headers,
+                        payload_template=payload_template,
+                        timeout_config=timeout_config,
+                        on_status_update=None,  # 规划任务没有状态更新回调
+                        max_continuations=2  # 规划任务最多续写2次
+                    )
+                
+                # 清理可能的代码块标记和前后空白
+                generated_text = generated_text.strip()
+                
+                # 移除代码块标记
+                if generated_text.startswith("```json"):
+                    generated_text = generated_text[7:].strip()
+                elif generated_text.startswith("```"):
+                    generated_text = generated_text[3:].strip()
+                
+                if generated_text.endswith("```"):
+                    generated_text = generated_text[:-3].strip()
+                
+                # 解析 JSON
+                plan_data = None
+                try:
+                    plan_data = json.loads(generated_text)
+                except json.JSONDecodeError as e:
+                    # 尝试提取 JSON 对象部分
+                    import re
+                    # 匹配 {...} 格式的 JSON 对象
+                    json_match = re.search(r'\{.*\}', generated_text, re.DOTALL)
+                    if json_match:
+                        try:
+                            plan_data = json.loads(json_match.group())
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    if plan_data is None:
+                        # JSON解析失败，尝试重试
+                        if retry_count < MAX_RETRIES:
+                            import asyncio
+                            retry_delay = get_retry_delay(self.model, retry_count)
+                            await asyncio.sleep(retry_delay)
+                            return await self._plan_single_file(
+                                textbook_name, file_chunks_info, existing_type_distribution, retry_count + 1
+                            )
+                        else:
+                            try:
+                                error_msg = repr(e) if hasattr(e, '__repr__') else "JSON 解析错误"
+                            except (UnicodeEncodeError, UnicodeDecodeError):
+                                error_msg = "JSON 解析错误"
+                            raise ValueError(
+                                f"无法解析规划任务 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
+                                f"响应内容前500字符: {generated_text[:500]}"
+                            )
+                
+                # 验证并转换规划数据
+                try:
+                    # 验证 plans 数组长度
+                    plans = plan_data.get("plans", [])
+                    if len(plans) != len(file_chunks_info):
+                        raise ValueError(
+                            f"规划结果中的切片数量 ({len(plans)}) 与输入的切片数量 ({len(file_chunks_info)}) 不一致"
+                        )
+                    
+                    # 验证每个计划的 chunk_id 是否匹配
+                    input_chunk_ids = {chunk["chunk_id"] for chunk in file_chunks_info}
+                    plan_chunk_ids = {plan.get("chunk_id") for plan in plans}
+                    
+                    if input_chunk_ids != plan_chunk_ids:
+                        missing_ids = input_chunk_ids - plan_chunk_ids
+                        extra_ids = plan_chunk_ids - input_chunk_ids
+                        error_parts = []
+                        if missing_ids:
+                            error_parts.append(f"缺少切片 ID: {missing_ids}")
+                        if extra_ids:
+                            error_parts.append(f"多余的切片 ID: {extra_ids}")
+                        raise ValueError("规划结果中的切片 ID 与输入不匹配: " + ", ".join(error_parts))
+                    
+                    # 构建 ChunkGenerationPlan 对象列表
+                    chunk_plans = []
+                    for plan_item in plans:
+                        chunk_plan = ChunkGenerationPlan(**plan_item)
+                        chunk_plans.append(chunk_plan)
+                    
+                    logger.info(f"[规划任务] 单文件规划完成 - 切片数: {len(chunk_plans)}, 总题目数: {sum(p.question_count for p in chunk_plans)}")
+                    return chunk_plans
+                    
+                except Exception as e:
+                    # 验证失败，尝试重试
+                    logger.warning(f"[规划任务] 单文件规划验证失败，准备重试 - 重试次数: {retry_count}/{MAX_RETRIES}, 错误: {str(e)}")
+                    if retry_count < MAX_RETRIES:
+                        import asyncio
+                        retry_delay = get_retry_delay(self.model, retry_count)
+                        await asyncio.sleep(retry_delay)
+                        return await self._plan_single_file(
+                            textbook_name, file_chunks_info, existing_type_distribution, retry_count + 1
+                        )
+                    else:
+                        try:
+                            error_msg = repr(e) if hasattr(e, '__repr__') else "规划任务验证错误"
+                        except (UnicodeEncodeError, UnicodeDecodeError):
+                            error_msg = "规划任务验证错误"
+                        logger.error(f"[规划任务] 单文件规划验证失败，已达最大重试次数 - 错误: {error_msg}")
+                        raise ValueError(f"规划任务验证失败（已重试{MAX_RETRIES}次）: {error_msg}")
+                
+        except httpx.TimeoutException:
+            # 超时错误，尝试重试
+            logger.warning(f"[规划任务] 单文件请求超时，准备重试 - 重试次数: {retry_count}/{MAX_RETRIES}, 模型: {self.model}")
+            if retry_count < MAX_RETRIES:
+                import asyncio
+                retry_delay = get_retry_delay(self.model, retry_count)
+                await asyncio.sleep(retry_delay)
+                return await self._plan_single_file(
+                    textbook_name, file_chunks_info, existing_type_distribution, retry_count + 1
+                )
+            logger.error(f"[规划任务] 单文件请求超时，已达最大重试次数 - 模型: {self.model}")
+            raise ValueError(f"规划任务请求超时（已重试{MAX_RETRIES}次，模型: {self.model}）")
+        except httpx.HTTPStatusError as e:
+            # HTTP错误，某些错误可以重试
+            if e.response.status_code >= 500 and retry_count < MAX_RETRIES:
+                import asyncio
+                retry_delay = get_retry_delay(self.model, retry_count)
+                await asyncio.sleep(retry_delay)
+                return await self._plan_single_file(
+                    textbook_name, file_chunks_info, existing_type_distribution, retry_count + 1
+                )
+            error_msg = f"OpenRouter API 请求失败: HTTP {e.response.status_code} (模型: {self.model})"
+            if e.response.text:
+                response_text_safe = e.response.text[:500].encode('utf-8', errors='replace').decode('utf-8')
+                error_msg += f"\n响应内容: {response_text_safe}"
+            raise ValueError(error_msg)
+        except httpx.RequestError as e:
+            # 网络错误，可以重试
+            if retry_count < MAX_RETRIES:
+                import asyncio
+                retry_delay = get_retry_delay(self.model, retry_count)
+                await asyncio.sleep(retry_delay)
+                return await self._plan_single_file(
+                    textbook_name, file_chunks_info, existing_type_distribution, retry_count + 1
+                )
+            try:
+                error_msg = repr(e) if hasattr(e, '__repr__') else "网络请求错误"
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                error_msg = "网络请求错误"
+            raise ValueError(f"OpenRouter API 请求错误: {error_msg} (模型: {self.model})")
+        except Exception as e:
+            try:
+                error_msg = repr(e) if hasattr(e, '__repr__') else "未知错误"
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                error_msg = "规划任务时发生未知错误"
+            raise ValueError(f"规划任务时发生错误: {error_msg}")
+
+    async def plan_generation_tasks(
+        self,
+        textbook_name: str,
+        chunks_info: List[Dict[str, Any]],
+        retry_count: int = 0
+    ) -> TextbookGenerationPlan:
+        """
+        规划教材题目生成任务
+        
+        按文件分组，每个文件单独调用 LLM 规划，最后合并结果。
+        已规划文件的题型分布会传递给后续文件作为参考，确保全书题型比例均衡。
+        
+        Args:
+            textbook_name: 教材名称
+            chunks_info: 切片信息列表，每个元素包含：
+                - chunk_id: 切片 ID (int)
+                - file_id: 文件 ID (str) - 用于按文件分组
+                - chapter_name: 章节名称 (str)
+                - content_summary: 内容摘要 (str)
+            retry_count: 当前重试次数（仅用于整体重试，单文件重试在 _plan_single_file 中处理）
+            
+        Returns:
+            TextbookGenerationPlan 对象，包含所有切片的生成计划
+        """
+        logger.info(f"[规划任务] 开始规划题目生成任务 - 教材: {textbook_name}, 切片数: {len(chunks_info)}, 重试次数: {retry_count}")
+        
+        if not chunks_info:
+            raise ValueError("切片信息列表不能为空")
+        
+        # 按文件分组
+        files_chunks: Dict[str, List[Dict[str, Any]]] = {}
+        for chunk_info in chunks_info:
+            file_id = chunk_info.get("file_id")
+            if not file_id:
+                # 如果没有 file_id，尝试从数据库查询
+                chunk_id = chunk_info.get("chunk_id")
+                if chunk_id:
+                    # 从数据库查询 file_id
+                    with db._get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT file_id FROM chunks WHERE chunk_id = ?", (chunk_id,))
+                        row = cursor.fetchone()
+                        if row:
+                            file_id = row["file_id"]
+                        else:
+                            logger.warning(f"[规划任务] 无法找到 chunk_id={chunk_id} 对应的 file_id，跳过该切片")
+                            continue
+                else:
+                    logger.warning(f"[规划任务] 切片信息缺少 file_id 和 chunk_id，跳过")
+                    continue
+            
+            if file_id not in files_chunks:
+                files_chunks[file_id] = []
+            files_chunks[file_id].append(chunk_info)
+        
+        if not files_chunks:
+            raise ValueError("没有有效的文件切片信息")
+        
+        logger.info(f"[规划任务] 按文件分组完成 - 文件数: {len(files_chunks)}")
+        
+        # 逐个文件规划，并累积题型分布
+        all_plans: List[ChunkGenerationPlan] = []
+        accumulated_type_distribution: Dict[str, int] = {}
+        file_count = len(files_chunks)
+        
+        for file_idx, (file_id, file_chunks_info) in enumerate(files_chunks.items(), 1):
+            logger.info(f"[规划任务] 规划文件 {file_idx}/{file_count} - file_id: {file_id}, 切片数: {len(file_chunks_info)}")
+            
+            # 调用单文件规划函数，传递已累积的题型分布作为参考
+            file_plans = await self._plan_single_file(
+                textbook_name=textbook_name,
+                file_chunks_info=file_chunks_info,
+                existing_type_distribution=accumulated_type_distribution if accumulated_type_distribution else None,
+                retry_count=0  # 单文件重试在 _plan_single_file 内部处理
+            )
+            
+            # 合并规划结果
+            all_plans.extend(file_plans)
+            
+            # 更新累积的题型分布
+            for plan in file_plans:
+                for q_type, count in plan.type_distribution.items():
+                    accumulated_type_distribution[q_type] = accumulated_type_distribution.get(q_type, 0) + count
+            
+            logger.info(f"[规划任务] 文件 {file_idx}/{file_count} 规划完成 - 题目数: {sum(p.question_count for p in file_plans)}, 累积题型分布: {accumulated_type_distribution}")
+        
+        # 计算总题目数量
+        total_questions = sum(plan.question_count for plan in all_plans)
+        
+        # 创建 TextbookGenerationPlan 对象
+        textbook_plan = TextbookGenerationPlan(
+            plans=all_plans,
+            total_questions=total_questions,
+            type_distribution=accumulated_type_distribution
+        )
+        
+        logger.info(f"[规划任务] 规划完成 - 总题目数: {total_questions}, 题型分布: {accumulated_type_distribution}")
+        return textbook_plan
+        
+        # 构建系统提示词
+        system_prompt = """你是一个专业的计算机教材习题规划专家。你的任务是为整本教材的每个切片规划题目生成任务。
+
+## 任务要求：
+
+1. **总题量覆盖**：确保所有章节都有足够的题目覆盖，重要章节应分配更多题目。
+
+2. **题型比例均衡**：在全书范围内，各题型（单选题、多选题、判断题、填空题、简答题、编程题）的比例应该均衡。建议比例：
+   - 单选题：20-30%
+   - 多选题：15-25%
+   - 判断题：15-25%
+   - 填空题：10-20%
+   - 简答题：10-20%
+   - 编程题：10-20%
+
+3. **题目数量分配**：
+   - 每个切片根据内容深度分配 1-6 题
+   - 基础概念切片：1-2 题
+   - 中等深度切片：2-4 题
+   - 深度内容切片：4-6 题
+
+4. **题型选择原则**：
+   - 根据切片内容特点选择合适的题型
+   - 如果内容包含代码、算法，优先包含编程题或填空题
+   - 概念性内容适合使用选择题和判断题
+   - 需要详细解释的内容适合使用简答题
+
+5. **题型精确数量**：
+   - 必须为每个切片规划每种题型的精确数量
+   - type_distribution 中每种题型的数量之和必须等于 question_count
+   - 例如：如果 question_count=5，type_distribution 可以是 {"单选题": 2, "多选题": 2, "判断题": 1}
+
+## 输出格式：
+
+请严格按照以下 JSON 格式返回，不要添加任何额外的文本、说明或代码块标记：
+
+```json
+{
+  "plans": [
+    {
+      "chunk_id": 123,
+      "question_count": 5,
+      "question_types": ["单选题", "多选题", "判断题"],
+      "type_distribution": {
+        "单选题": 2,
+        "多选题": 2,
+        "判断题": 1
+      }
+    },
+    {
+      "chunk_id": 124,
+      "question_count": 3,
+      "question_types": ["填空题", "简答题"],
+      "type_distribution": {
+        "填空题": 1,
+        "简答题": 2
+      }
+    }
+  ],
+  "total_questions": 8,
+  "type_distribution": {
+    "单选题": 2,
+    "多选题": 2,
+    "判断题": 1,
+    "填空题": 1,
+    "简答题": 2
+  }
+}
+```
+
+**重要**：
+- 必须为每个切片生成一个计划（plans 数组长度必须等于输入的切片数量）
+- total_questions 必须等于所有切片 question_count 的总和
+- 每个切片的 question_count 必须在 1-10 之间
+- 每个切片的 question_types 至少包含一种题型
+- 每个切片的 type_distribution 必须包含该切片所有题型的精确数量，且总和等于 question_count
+- type_distribution（顶层）必须统计所有切片的题型分布总和
+"""
+        
+        # 构建用户提示词
+        chunks_text = "\n".join([
+            f"{idx + 1}. **切片 ID: {chunk['chunk_id']}** | **章节: {chunk['chapter_name']}**\n"
+            f"   内容摘要: {chunk['content_summary'] if chunk['content_summary'] else '（无摘要）'}\n"
+            for idx, chunk in enumerate(chunks_catalog)
+        ])
+        
+        user_prompt = f"""请为以下教材规划题目生成任务：
+
+## 教材信息：
+**教材名称**：{textbook_name}
+
+## 切片目录（共 {len(chunks_catalog)} 个切片）：
+
+{chunks_text}
+
+请根据以上信息，为每个切片规划题目生成任务。确保：
+1. 总题量覆盖所有章节
+2. 全书范围内各题型比例均衡
+3. 每个切片根据内容深度分配 1-10 题
+
+请严格按照 JSON 格式返回，不要添加任何额外的文本、说明或代码块标记。直接返回 JSON 对象即可。"""
+        
+        # 构建请求消息
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        # 调用 OpenRouter API
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "AI Question Generator",
+        }
+        
+        # 估算 max_tokens（规划任务通常不需要太多 tokens）
+        max_tokens = min(4000, MAX_KNOWLEDGE_EXTRACTION_TOKENS)
+        
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.3,  # 规划任务使用较低温度，确保稳定性
+            "max_tokens": max_tokens,
+        }
+        
+        try:
+            # 使用针对模型的超时配置
+            timeout_config = get_timeout_config(self.model, is_stream=False)
+            async with httpx.AsyncClient(timeout=timeout_config) as client:
+                response = await client.post(
+                    self.api_endpoint,
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                # 提取生成的文本
+                if "choices" not in result or len(result["choices"]) == 0:
+                    raise ValueError("API 返回结果中没有 choices 字段")
+                
+                generated_text = result["choices"][0]["message"]["content"].strip()
+                finish_reason = result["choices"][0].get("finish_reason", "")
+                
+                # 如果 finish_reason 是 "length"，继续生成剩余内容
+                if finish_reason == "length":
+                    # 构建 payload 模板（不包含 messages）
+                    payload_template = {
+                        "model": self.model,
+                        "temperature": payload.get("temperature", 0.3),
+                        "max_tokens": payload.get("max_tokens", 4000),
+                    }
+                    
+                    # 调用续写函数
+                    generated_text = await self._continue_generation_on_length_limit(
+                        messages=messages,
+                        accumulated_text=generated_text,
+                        headers=headers,
+                        payload_template=payload_template,
+                        timeout_config=timeout_config,
+                        on_status_update=None,  # 规划任务没有状态更新回调
+                        max_continuations=2  # 规划任务最多续写2次
+                    )
+                
+                # 清理可能的代码块标记和前后空白
+                generated_text = generated_text.strip()
+                
+                # 移除代码块标记
+                if generated_text.startswith("```json"):
+                    generated_text = generated_text[7:].strip()
+                elif generated_text.startswith("```"):
+                    generated_text = generated_text[3:].strip()
+                
+                if generated_text.endswith("```"):
+                    generated_text = generated_text[:-3].strip()
+                
+                # 解析 JSON
+                plan_data = None
+                try:
+                    plan_data = json.loads(generated_text)
+                except json.JSONDecodeError as e:
+                    # 尝试提取 JSON 对象部分
+                    import re
+                    # 匹配 {...} 格式的 JSON 对象
+                    json_match = re.search(r'\{.*\}', generated_text, re.DOTALL)
+                    if json_match:
+                        try:
+                            plan_data = json.loads(json_match.group())
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    if plan_data is None:
+                        # JSON解析失败，尝试重试
+                        if retry_count < MAX_RETRIES:
+                            import asyncio
+                            retry_delay = get_retry_delay(self.model, retry_count)
+                            await asyncio.sleep(retry_delay)
+                            return await self.plan_generation_tasks(
+                                textbook_name, chunks_info, retry_count + 1
+                            )
+                        else:
+                            try:
+                                error_msg = repr(e) if hasattr(e, '__repr__') else "JSON 解析错误"
+                            except (UnicodeEncodeError, UnicodeDecodeError):
+                                error_msg = "JSON 解析错误"
+                            raise ValueError(
+                                f"无法解析规划任务 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
+                                f"响应内容前500字符: {generated_text[:500]}"
+                            )
+                
+                # 验证并转换规划数据
+                try:
+                    # 验证 plans 数组长度
+                    plans = plan_data.get("plans", [])
+                    if len(plans) != len(chunks_info):
+                        raise ValueError(
+                            f"规划结果中的切片数量 ({len(plans)}) 与输入的切片数量 ({len(chunks_info)}) 不一致"
+                        )
+                    
+                    # 验证每个计划的 chunk_id 是否匹配
+                    input_chunk_ids = {chunk["chunk_id"] for chunk in chunks_info}
+                    plan_chunk_ids = {plan.get("chunk_id") for plan in plans}
+                    
+                    if input_chunk_ids != plan_chunk_ids:
+                        missing_ids = input_chunk_ids - plan_chunk_ids
+                        extra_ids = plan_chunk_ids - input_chunk_ids
+                        error_parts = []
+                        if missing_ids:
+                            error_parts.append(f"缺少切片 ID: {missing_ids}")
+                        if extra_ids:
+                            error_parts.append(f"多余的切片 ID: {extra_ids}")
+                        raise ValueError("规划结果中的切片 ID 与输入不匹配: " + ", ".join(error_parts))
+                    
+                    # 构建 TextbookGenerationPlan 对象
+                    chunk_plans = []
+                    for plan_item in plans:
+                        chunk_plan = ChunkGenerationPlan(**plan_item)
+                        chunk_plans.append(chunk_plan)
+                    
+                    # 计算总题目数量
+                    total_questions = sum(plan.question_count for plan in chunk_plans)
+                    
+                    # 使用 LLM 返回的顶层 type_distribution（统计所有切片的题型分布总和）
+                    # 如果 LLM 没有返回，则从各切片的 type_distribution 汇总
+                    type_distribution = plan_data.get("type_distribution", {})
+                    if not type_distribution:
+                        # 如果 LLM 没有返回顶层 type_distribution，从各切片汇总
+                        type_distribution = {}
+                        for plan in chunk_plans:
+                            for q_type, count in plan.type_distribution.items():
+                                type_distribution[q_type] = type_distribution.get(q_type, 0) + count
+                    
+                    # 创建 TextbookGenerationPlan 对象
+                    textbook_plan = TextbookGenerationPlan(
+                        plans=chunk_plans,
+                        total_questions=total_questions,
+                        type_distribution=type_distribution
+                    )
+                    
+                    logger.info(f"[规划任务] 规划完成 - 总题目数: {total_questions}, 题型分布: {type_distribution}")
+                    return textbook_plan
+                    
+                except Exception as e:
+                    # 验证失败，尝试重试
+                    logger.warning(f"[规划任务] 规划验证失败，准备重试 - 重试次数: {retry_count}/{MAX_RETRIES}, 错误: {str(e)}")
+                    if retry_count < MAX_RETRIES:
+                        import asyncio
+                        retry_delay = get_retry_delay(self.model, retry_count)
+                        await asyncio.sleep(retry_delay)
+                        return await self.plan_generation_tasks(
+                            textbook_name, chunks_info, retry_count + 1
+                        )
+                    else:
+                        try:
+                            error_msg = repr(e) if hasattr(e, '__repr__') else "规划任务验证错误"
+                        except (UnicodeEncodeError, UnicodeDecodeError):
+                            error_msg = "规划任务验证错误"
+                        logger.error(f"[规划任务] 规划验证失败，已达最大重试次数 - 错误: {error_msg}")
+                        raise ValueError(f"规划任务验证失败（已重试{MAX_RETRIES}次）: {error_msg}")
+                
+        except httpx.TimeoutException:
+            # 超时错误，尝试重试
+            logger.warning(f"[规划任务] 请求超时，准备重试 - 重试次数: {retry_count}/{MAX_RETRIES}, 模型: {self.model}")
+            if retry_count < MAX_RETRIES:
+                import asyncio
+                retry_delay = get_retry_delay(self.model, retry_count)
+                await asyncio.sleep(retry_delay)
+                return await self.plan_generation_tasks(
+                    textbook_name, chunks_info, retry_count + 1
+                )
+            logger.error(f"[规划任务] 请求超时，已达最大重试次数 - 模型: {self.model}")
+            raise ValueError(f"规划任务请求超时（已重试{MAX_RETRIES}次，模型: {self.model}）")
+        except httpx.HTTPStatusError as e:
+            # HTTP错误，某些错误可以重试
+            if e.response.status_code >= 500 and retry_count < MAX_RETRIES:
+                import asyncio
+                retry_delay = get_retry_delay(self.model, retry_count)
+                await asyncio.sleep(retry_delay)
+                return await self.plan_generation_tasks(
+                    textbook_name, chunks_info, retry_count + 1
+                )
+            error_msg = f"OpenRouter API 请求失败: HTTP {e.response.status_code} (模型: {self.model})"
+            if e.response.text:
+                response_text_safe = e.response.text[:500].encode('utf-8', errors='replace').decode('utf-8')
+                error_msg += f"\n响应内容: {response_text_safe}"
+            raise ValueError(error_msg)
+        except httpx.RequestError as e:
+            # 网络错误，可以重试
+            if retry_count < MAX_RETRIES:
+                import asyncio
+                retry_delay = get_retry_delay(self.model, retry_count)
+                await asyncio.sleep(retry_delay)
+                return await self.plan_generation_tasks(
+                    textbook_name, chunks_info, retry_count + 1
+                )
+            try:
+                error_msg = repr(e) if hasattr(e, '__repr__') else "网络请求错误"
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                error_msg = "网络请求错误"
+            raise ValueError(f"OpenRouter API 请求错误: {error_msg} (模型: {self.model})")
+        except Exception as e:
+            try:
+                error_msg = repr(e) if hasattr(e, '__repr__') else "未知错误"
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                error_msg = "规划任务时发生未知错误"
+            raise ValueError(f"规划任务时发生错误: {error_msg}")
 
     async def _generate_batch(
         self,
@@ -1273,13 +2028,14 @@ class OpenRouterClient:
         retry_count: int = 0,
         chunks: Optional[List[Dict[str, Any]]] = None,
         allowed_difficulties: Optional[List[str]] = None,
-        textbook_name: Optional[str] = None
+        textbook_name: Optional[str] = None,
+        strict_plan_mode: bool = False
     ) -> List[Dict[str, Any]]:
         """
         生成一批题目（非流式，内部方法，支持重试）
         
         Args:
-            context: 教材内容上下文（现在主要用于向后兼容，优先使用知识点）
+            context: 教材内容上下文（仅作为参考，实际生成基于知识点）
             batch_question_types: 本批要生成的题型列表
             batch_count: 本批要生成的题目数量
             chapter_name: 章节名称（可选）
@@ -1291,12 +2047,16 @@ class OpenRouterClient:
         Returns:
             题目字典列表
         """
+        logger.info(f"[题目生成] 开始生成批次 - 题型: {batch_question_types}, 数量: {batch_count}, 章节: {chapter_name or '未指定'}, 重试: {retry_count}")
+        
         # ========== 新的出题流程：基于知识点生成题目（升级版：三层图谱结构）==========
         # 1. 从前置 chunks 中提取知识点（包含层级背景和横向依赖）
         knowledge_info = {}
         knowledge_nodes = []
         if chunks:
             knowledge_info = extract_knowledge_from_chunks(chunks)
+            if knowledge_info.get("core_concept"):
+                logger.info(f"[题目生成] 提取到知识点 - 核心概念: {knowledge_info.get('core_concept')}, Bloom层级: {knowledge_info.get('bloom_level')}")
             
             # 收集相关的知识点节点（用于后续验证）
             if knowledge_info.get("node_id"):
@@ -1326,21 +2086,22 @@ class OpenRouterClient:
         if not chapter_name and chunks:
             chapter_name = get_chapter_name_from_chunks(chunks)
         
-        if chapter_name:
-            knowledge_prompt += f"\n**章节**：{chapter_name}\n"
+        # 3. 验证题型列表不能为空
+        if not batch_question_types or len(batch_question_types) == 0:
+            raise ValueError("batch_question_types 不能为空，必须指定要生成的题型")
         
-        # 3. 构建具体任务要求提示词（用于用户提示词）
-        adaptive_mode = not batch_question_types or len(batch_question_types) == 0
+        # 4. 构建具体任务要求提示词（用于用户提示词）
         task_prompt = build_task_specific_prompt(
-            batch_question_types if not adaptive_mode else [],
+            batch_question_types,
             batch_count,
             context=None,  # 与测试生成接口保持一致，不使用原始文本上下文
-            adaptive=adaptive_mode,
+            adaptive=False,
             knowledge_context=knowledge_info if knowledge_info.get("core_concept") else None,
-            allowed_difficulties=allowed_difficulties
+            allowed_difficulties=allowed_difficulties,
+            strict_plan_mode=strict_plan_mode  # 传递严格计划模式标志
         )
         
-        # 4. 构建连贯性说明
+        # 5. 构建连贯性说明
         core_concept = knowledge_info.get("core_concept")
         prerequisites_context = knowledge_info.get("prerequisites_context", [])
         coherence_prompt = PromptManager.build_coherence_prompt(
@@ -1348,9 +2109,9 @@ class OpenRouterClient:
             core_concept=core_concept
         )
         
-        # 5. 构建用户提示词（基于知识点，只包含具体任务信息，与测试生成接口保持一致）
+        # 6. 构建用户提示词（基于知识点，只包含具体任务信息，与测试生成接口保持一致）
         user_prompt = PromptManager.build_user_prompt_base(
-            adaptive=adaptive_mode,
+            adaptive=False,
             question_count=batch_count,
             chapter_name=chapter_name,
             core_concept=None,  # 已在 knowledge_prompt 中包含
@@ -1383,11 +2144,10 @@ class OpenRouterClient:
             "X-Title": "AI Question Generator",
         }
         
-        # 根据题目数量动态调整max_tokens（使用实际的adaptive_mode值，与测试生成接口保持一致）
+        # 根据题目数量动态调整max_tokens
         max_tokens = calculate_max_tokens_for_questions(
             batch_count,
-            model=self.model,
-            adaptive_mode=adaptive_mode
+            model=self.model
         )
         
         # 输出全书出题时使用的提示词到日志
@@ -1397,9 +2157,8 @@ class OpenRouterClient:
         print(f"[全书出题] 教材名称: {textbook_name or '未指定'}")
         print(f"[全书出题] 章节名称: {chapter_name or '未指定'}")
         print(f"[全书出题] 题目数量: {batch_count}")
-        print(f"[全书出题] 自适应模式: {adaptive_mode}")
         print(f"[全书出题] 允许的难度: {allowed_difficulties or '全部'}")
-        print(f"[全书出题] 题型: {batch_question_types if batch_question_types else '自适应选择'}")
+        print(f"[全书出题] 题型: {batch_question_types}")
         print("\n[全书出题] 知识点信息:")
         if knowledge_info.get("core_concept"):
             print(f"  - 核心概念: {knowledge_info.get('core_concept')}")
@@ -1408,9 +2167,6 @@ class OpenRouterClient:
             print(f"  - 易错点: {knowledge_info.get('confusion_points', [])}")
         else:
             print("  - 未提取到知识点信息")
-        print("\n[全书出题] 系统提示词:")
-        print("-"*80)
-        print(system_prompt[:500] + "..." if len(system_prompt) > 500 else system_prompt)
         print("\n[全书出题] Few-Shot 示例:")
         print("-"*80)
         print(few_shot_example[:500] + "..." if len(few_shot_example) > 500 else few_shot_example)
@@ -1418,12 +2174,6 @@ class OpenRouterClient:
         print("-"*80)
         print(knowledge_prompt[:500] + "..." if len(knowledge_prompt) > 500 else knowledge_prompt)
         print("\n[全书出题] 任务提示词:")
-        print("-"*80)
-        print(task_prompt[:500] + "..." if len(task_prompt) > 500 else task_prompt)
-        print("\n[全书出题] 连贯性提示词:")
-        print("-"*80)
-        print(coherence_prompt[:500] + "..." if len(coherence_prompt) > 500 else coherence_prompt)
-        print("\n[全书出题] 完整用户提示词:")
         print("-"*80)
         print(user_prompt[:1000] + "..." if len(user_prompt) > 1000 else user_prompt)
         print("\n[全书出题] 模型: " + self.model)
@@ -1536,9 +2286,10 @@ class OpenRouterClient:
                             )
                 
                 # 验证并转换题目数据
+                logger.info(f"[题目生成] 开始解析题目数据 - 原始数据条数: {len(questions_data)}")
                 questions = []
-                programming_question_failed = False
-                for q_data in questions_data:
+                skipped_count = 0
+                for idx, q_data in enumerate(questions_data):
                     try:
                         question = Question(**q_data)
                         questions.append(question.model_dump())
@@ -1548,44 +2299,30 @@ class OpenRouterClient:
                         except (UnicodeEncodeError, UnicodeDecodeError):
                             error_msg = "未知错误"
                         
-                        # 如果是编程题，检查是否缺少必需字段
-                        if q_data.get("type") == "编程题":
-                            # 检查是否缺少 answer 字段
-                            if "answer" in error_msg.lower() and ("missing" in error_msg.lower() or "required" in error_msg.lower() or "field required" in error_msg.lower()):
-                                programming_question_failed = True
-                                print(f"错误：编程题生成失败 - 缺少 answer 字段。编程题必须提供完整的解决方案代码。")
-                            # 检查是否缺少 explain 字段
-                            elif "explain" in error_msg.lower() and ("missing" in error_msg.lower() or "required" in error_msg.lower() or "field required" in error_msg.lower()):
-                                programming_question_failed = True
-                                print(f"错误：编程题生成失败 - 缺少 explain 字段。编程题必须提供详细的解析说明。")
-                            # 检查是否缺少测试用例
-                            elif "测试用例" in error_msg or "test_cases" in error_msg.lower():
-                                programming_question_failed = True
-                                print(f"错误：编程题生成失败 - {error_msg}。编程题必须提供完整的测试用例。")
-                            else:
-                                # 其他编程题错误也标记为失败
-                                programming_question_failed = True
-                                print(f"错误：编程题生成失败 - {error_msg}")
-                        else:
-                            print(f"警告：跳过无效题目数据: {error_msg}")
-                        continue
+                        # 如果题目验证失败，跳过该题目，继续处理下一个
+                        skipped_count += 1
+                        logger.warning(f"[题目生成] 题目数据验证失败（第 {idx + 1} 道题），跳过: {error_msg}\n题目数据: {q_data}")
                 
-                # 如果编程题生成失败，抛出错误
-                if programming_question_failed:
-                    raise ValueError("编程题生成失败：编程题必须提供以下必需字段：answer（完整的解决方案代码）、explain（详细的解析说明）和 test_cases（完整的测试用例，包括 input_cases 和 output_cases）。")
+                # 如果所有题目都验证失败，记录警告
+                if skipped_count > 0:
+                    logger.warning(f"[题目生成] 共跳过 {skipped_count} 道验证失败的题目，成功解析 {len(questions)} 道题目")
+                if len(questions) == 0 and len(questions_data) > 0:
+                    logger.error(f"[题目生成] 所有题目验证失败，共 {len(questions_data)} 道题目")
                 
                 # 验证题目分布（如果有关联的知识点节点）
                 if knowledge_nodes and questions:
                     validation_result = validate_question_distribution(questions, knowledge_nodes)
                     if not validation_result["is_valid"]:
-                        print(f"[题目生成] ⚠ 题目分布验证警告: {validation_result['suggestions']}")
+                        logger.warning(f"[题目生成] 题目分布验证警告: {validation_result['suggestions']}")
                     else:
-                        print(f"[题目生成] ✓ 题目分布验证通过")
+                        logger.info(f"[题目生成] 题目分布验证通过")
                 
+                logger.info(f"[题目生成] 批次生成完成 - 成功生成 {len(questions)} 道题目")
                 return questions
                 
         except httpx.TimeoutException:
             # 超时错误，尝试重试
+            logger.warning(f"[题目生成] 请求超时，准备重试 - 重试次数: {retry_count}/{MAX_RETRIES}, 模型: {self.model}")
             if retry_count < MAX_RETRIES:
                 import asyncio
                 retry_delay = get_retry_delay(self.model, retry_count)
@@ -1594,6 +2331,7 @@ class OpenRouterClient:
                     context, batch_question_types, batch_count,
                     chapter_name, retry_count + 1, chunks, allowed_difficulties, textbook_name
                 )
+            logger.error(f"[题目生成] 请求超时，已达最大重试次数 - 模型: {self.model}")
             raise ValueError(f"请求超时（已重试{MAX_RETRIES}次，模型: {self.model}）")
         except httpx.HTTPStatusError as e:
             # HTTP错误，某些错误可以重试
@@ -1678,14 +2416,11 @@ class OpenRouterClient:
             all_questions = []
             for q_type, count in zip(question_types, type_counts):
                 if count > 0:
-                    try:
-                        batch_questions = await self._generate_batch(
-                            context, [q_type], count, chapter_name, 0, chunks, None, None
-                        )
-                        all_questions.extend(batch_questions)
-                    except Exception as e:
-                        print(f"警告：{q_type}生成失败: {e}，跳过")
-                        continue
+                    # 如果生成失败，直接抛出异常，不跳过
+                    batch_questions = await self._generate_batch(
+                        context, [q_type], count, chapter_name, 0, chunks, None, None
+                    )
+                    all_questions.extend(batch_questions)
             return all_questions
         
         # 大批量题目，分批生成
@@ -1709,14 +2444,11 @@ class OpenRouterClient:
         
         # 执行分批生成
         for batch_type, batch_count in batches:
-            try:
-                batch_questions = await self._generate_batch(
-                    context, [batch_type], batch_count, chapter_name, 0, chunks, None, None
-                )
-                all_questions.extend(batch_questions)
-            except Exception as e:
-                print(f"警告：批次生成失败（{batch_type}，{batch_count} 道）: {e}，跳过该批次")
-                continue
+            # 如果生成失败，直接抛出异常，不跳过
+            batch_questions = await self._generate_batch(
+                context, [batch_type], batch_count, chapter_name, 0, chunks, None, None
+            )
+            all_questions.extend(batch_questions)
         
         return all_questions
 
@@ -1883,28 +2615,41 @@ async def generate_questions(
 
 async def generate_questions_for_chunk(
     chunk: Dict[str, Any],
+    type_distribution: Dict[str, int],
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     textbook_name: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
-    为单个切片生成题目（基于知识点，使用自适应模式）
+    为单个切片生成题目（基于知识点）
     
-    新的逻辑：
+    逻辑：
     1. 从 chunk 中提取知识点信息
     2. 基于知识点生成题目，而不是直接基于文本
-    3. 每个切片生成1-2道题目，难度为中等或困难
+    3. 按照 type_distribution 中每种题型的精确数量生成
+    4. 仅生成中等和困难难度的题目，不生成简单题目
     
     Args:
         chunk: 单个切片，包含 content 和 metadata
         api_key: OpenRouter API 密钥（可选）
         model: 模型名称（可选）
+        textbook_name: 教材名称（可选）
+        type_distribution: 每种题型的精确数量，例如 {"单选题": 2, "多选题": 2, "判断题": 1}
         
     Returns:
-        题目字典列表
+        题目字典列表（仅包含中等和困难难度的题目）
+        
+    Raises:
+        ValueError: 如果 type_distribution 为空或无效，或生成题目失败
     """
+    total_count = sum(type_distribution.values())
+    logger.info(f"[切片生成] 开始为切片生成题目 - 题型分布: {type_distribution}, 总数量: {total_count}, 教材: {textbook_name or '未指定'}")
+    
     if not chunk or not chunk.get("content"):
-        return []
+        raise ValueError("切片内容为空，无法生成题目")
+    
+    if not type_distribution or len(type_distribution) == 0:
+        raise ValueError("type_distribution 不能为空")
     
     # 构建上下文（仅作为参考）
     context = chunk.get("content", "")
@@ -1917,29 +2662,34 @@ async def generate_questions_for_chunk(
     # 创建 OpenRouter 客户端
     client = OpenRouterClient(api_key=api_key, model=model)
     
-    # 随机生成1-2道题目
-    import random
-    question_count = random.randint(1, 2)
-    
-    # 使用自适应模式生成题目（基于知识点）
-    # 调用 _generate_batch 方法，传入空的 question_types 列表启用自适应模式
-    # 每个切片生成1-2道题目，难度限制为中等、困难
-    # 传入单个 chunk 的列表以提取知识点
-    questions_data = await client._generate_batch(
-        context=context,  # 仅作为参考
-        batch_question_types=[],  # 空列表启用自适应模式
-        batch_count=question_count,  # 1-2道题目
-        chapter_name=chapter_name,
-        retry_count=0,
-        chunks=[chunk],  # 用于提取知识点
-        allowed_difficulties=["中等", "困难"],  # 限制难度为中等、困难，不生成简单题目
-        textbook_name=textbook_name  # 传递教材名称
-    )
+    # 按照 type_distribution 中每种题型的数量分别生成
+    all_questions = []
+    for question_type, count in type_distribution.items():
+        if count <= 0:
+            continue
+        
+        logger.info(f"[切片生成] 生成题型 - {question_type}: {count} 道")
+        
+        # 如果生成失败，直接抛出异常，不跳过
+        batch_questions = await client._generate_batch(
+            context=context,  # 仅作为参考
+            batch_question_types=[question_type],  # 每次只生成一种题型
+            batch_count=count,  # 生成该题型的精确数量
+            chapter_name=chapter_name,
+            retry_count=0,
+            chunks=[chunk],  # 用于提取知识点
+            allowed_difficulties=["中等", "困难"],  # 仅允许中等和困难题目
+            textbook_name=textbook_name,  # 传递教材名称
+            strict_plan_mode=True  # 启用严格计划模式
+        )
+        all_questions.extend(batch_questions)
+        logger.info(f"[切片生成] 题型 {question_type} 生成完成 - 实际生成 {len(batch_questions)} 道")
     
     # 为每个题目添加章节信息
-    for question in questions_data:
+    for question in all_questions:
         if chapter_name:
             question["chapter"] = chapter_name
     
-    return questions_data
+    logger.info(f"[切片生成] 切片生成完成 - 总共生成 {len(all_questions)} 道题目")
+    return all_questions
 

@@ -410,12 +410,12 @@ def initialize_ai_config(conn: sqlite3.Connection):
         print("  AI 配置表已有数据，跳过初始化")
         return
     
-    # 从环境变量读取默认值
-    import os
+    # 从配置模块读取默认值
     from datetime import datetime
-    default_api_key = os.getenv("OPENROUTER_API_KEY", "")
-    default_model = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-    default_endpoint = "https://openrouter.ai/api/v1/chat/completions"
+    from app.core.config import settings
+    default_api_key = settings.openrouter_api_key
+    default_model = settings.openrouter_model
+    default_endpoint = settings.openrouter_api_endpoint
     
     cursor.execute("""
         INSERT INTO ai_config (api_endpoint, api_key, model, updated_at)

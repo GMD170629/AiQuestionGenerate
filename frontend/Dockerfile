@@ -6,8 +6,10 @@ RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
 # Install dependencies based on the preferred package manager
-COPY package.json package-lock.json* ./
-RUN npm ci
+COPY package.json package-lock.json ./
+# 使用 npm ci 进行干净安装（更快且可重复）
+# 如果失败则回退到 npm install
+RUN npm ci --legacy-peer-deps 2>/dev/null || npm install --legacy-peer-deps
 
 # Rebuild the source code only when needed
 FROM base AS builder

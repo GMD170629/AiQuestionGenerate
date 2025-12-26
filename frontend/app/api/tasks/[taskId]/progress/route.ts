@@ -1,19 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getBackendUrl } from '@/lib/backend-url';
 
 // 强制使用 Edge Runtime，这对流式传输支持最友好，且能避开 Node.js 层的某些缓存
 export const runtime = 'edge';
 // 禁用静态缓存
 export const dynamic = 'force-dynamic';
-
-function getBackendUrl(): string {
-  if (process.env.BACKEND_URL) return process.env.BACKEND_URL;
-  if (process.env.NEXT_PUBLIC_BACKEND_URL) return process.env.NEXT_PUBLIC_BACKEND_URL;
-  
-  // Docker 环境与开发环境判断
-  return process.env.NODE_ENV === 'production'
-    ? 'http://backend:8000'
-    : 'http://localhost:8000';
-}
 
 export async function GET(
   request: NextRequest,

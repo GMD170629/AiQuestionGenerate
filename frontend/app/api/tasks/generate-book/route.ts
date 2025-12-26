@@ -1,17 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-/**
- * 获取后端 URL
- */
-function getBackendUrl(): string {
-  return (
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    process.env.BACKEND_URL ||
-    (process.env.NODE_ENV === 'production'
-      ? 'http://backend:8000'
-      : 'http://localhost:8000')
-  );
-}
+import { getBackendUrl } from '@/lib/backend-url';
 
 /**
  * POST /api/tasks/generate-book

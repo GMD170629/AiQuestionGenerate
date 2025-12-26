@@ -3,16 +3,7 @@
  * 代理请求到后端获取提示词列表
  */
 import { NextRequest, NextResponse } from 'next/server'
-
-function getBackendUrl(): string {
-  return (
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    process.env.BACKEND_URL ||
-    (process.env.NODE_ENV === 'production'
-      ? 'http://backend:8000'
-      : 'http://localhost:8000')
-  );
-}
+import { getBackendUrl } from '@/lib/backend-url'
 
 export async function GET(request: NextRequest) {
   const backendUrl = getBackendUrl();

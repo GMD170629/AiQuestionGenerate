@@ -1,9 +1,9 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { BookOpen, Filter, Loader2, RefreshCw, Download, ChevronLeft, ChevronRight } from 'lucide-react'
+import { BookOpen, Filter, Loader2, RefreshCw, Download, ChevronLeft, ChevronRight, FileText } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { Question, QuestionType } from '@/types/question'
+import { Question, QuestionType, Difficulty } from '@/types/question'
 import QuestionListComponent from './QuestionList'
 import { exportAndDownload } from '@/utils/export'
 import { getApiUrl } from '@/lib/api'
@@ -21,6 +21,13 @@ interface TextbookInfo {
   description?: string
 }
 
+interface FileInfo {
+  file_id: string
+  filename: string
+  file_size?: number
+  upload_time?: string
+}
+
 interface QuestionStatistics {
   total: number
   by_type: Record<string, number>
@@ -32,11 +39,14 @@ export default function QuestionLibrary() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [textbooks, setTextbooks] = useState<TextbookInfo[]>([])
+  const [files, setFiles] = useState<FileInfo[]>([])
   const [statistics, setStatistics] = useState<QuestionStatistics | null>(null)
   
   // 筛选条件
   const [selectedTextbookId, setSelectedTextbookId] = useState<string>('全部')
+  const [selectedFileId, setSelectedFileId] = useState<string>('全部')
   const [selectedType, setSelectedType] = useState<QuestionType | '全部'>('全部')
+  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty | '全部'>('全部')
   
   // 分页状态
   const [currentPage, setCurrentPage] = useState(1)
@@ -54,6 +64,20 @@ export default function QuestionLibrary() {
       setTextbooks(data)
     } catch (err) {
       console.error('加载教材列表失败:', err)
+    }
+  }
+  
+  // 加载文件列表
+  const loadFiles = async () => {
+    try {
+      const response = await fetch(getApiUrl('/files'))
+      if (!response.ok) {
+        throw new Error('获取文件列表失败')
+      }
+      const data = await response.json()
+      setFiles(data)
+    } catch (err) {
+      console.error('加载文件列表失败:', err)
     }
   }
   
@@ -81,8 +105,14 @@ export default function QuestionLibrary() {
       if (selectedTextbookId !== '全部') {
         params.append('textbook_id', selectedTextbookId)
       }
+      if (selectedFileId !== '全部') {
+        params.append('file_id', selectedFileId)
+      }
       if (selectedType !== '全部') {
         params.append('question_type', selectedType)
+      }
+      if (selectedDifficulty !== '全部') {
+        params.append('difficulty', selectedDifficulty)
       }
       
       // 添加分页参数
@@ -106,18 +136,19 @@ export default function QuestionLibrary() {
     } finally {
       setLoading(false)
     }
-  }, [selectedTextbookId, selectedType, currentPage, pageSize])
+  }, [selectedTextbookId, selectedFileId, selectedType, selectedDifficulty, currentPage, pageSize])
   
   // 初始化加载
   useEffect(() => {
     loadTextbooks()
+    loadFiles()
     loadStatistics()
   }, [])
   
   // 当筛选条件改变时重置到第一页并重新加载
   useEffect(() => {
     setCurrentPage(1)
-  }, [selectedTextbookId, selectedType])
+  }, [selectedTextbookId, selectedFileId, selectedType, selectedDifficulty])
   
   // 当分页或筛选条件改变时重新加载
   useEffect(() => {
@@ -143,6 +174,9 @@ export default function QuestionLibrary() {
   
   // 所有题型
   const allQuestionTypes: QuestionType[] = ['单选题', '多选题', '判断题', '填空题', '简答题', '编程题']
+  
+  // 所有难度
+  const allDifficulties: Difficulty[] = ['简单', '中等', '困难']
   
   return (
     <div className="w-full max-w-7xl mx-auto p-8 bg-slate-50 dark:bg-slate-900 min-h-screen">
@@ -195,8 +229,14 @@ export default function QuestionLibrary() {
                   if (selectedTextbookId !== '全部') {
                     params.append('textbook_id', selectedTextbookId)
                   }
+                  if (selectedFileId !== '全部') {
+                    params.append('file_id', selectedFileId)
+                  }
                   if (selectedType !== '全部') {
                     params.append('question_type', selectedType)
+                  }
+                  if (selectedDifficulty !== '全部') {
+                    params.append('difficulty', selectedDifficulty)
                   }
                   // 不设置 limit，获取所有题目
                   
@@ -221,8 +261,17 @@ export default function QuestionLibrary() {
                       filename = selectedTextbook.name
                     }
                   }
+                  if (selectedFileId !== '全部') {
+                    const selectedFile = files.find(f => f.file_id === selectedFileId)
+                    if (selectedFile) {
+                      filename = selectedFile.filename.replace(/\.[^/.]+$/, '') // 移除文件扩展名
+                    }
+                  }
                   if (selectedType !== '全部') {
                     filename += `_${selectedType}`
+                  }
+                  if (selectedDifficulty !== '全部') {
+                    filename += `_${selectedDifficulty}`
                   }
                   
                   exportAndDownload(allQuestions, {
@@ -310,6 +359,24 @@ export default function QuestionLibrary() {
               </Select>
             </div>
             
+            {/* 文件筛选 */}
+            <div className="flex items-center gap-2 relative z-10">
+              <FileText className="h-5 w-5 text-slate-500" />
+              <Select value={selectedFileId} onValueChange={setSelectedFileId}>
+                <SelectTrigger className="min-w-[200px]">
+                  <SelectValue placeholder="选择文件" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="全部">全部文件</SelectItem>
+                  {files.map((file) => (
+                    <SelectItem key={file.file_id} value={file.file_id}>
+                      {file.filename}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            
             {/* 题型筛选 */}
             <div className="flex items-center gap-2 relative z-10">
               <Select value={selectedType} onValueChange={(value) => setSelectedType(value as QuestionType | '全部')}>
@@ -321,6 +388,23 @@ export default function QuestionLibrary() {
                   {allQuestionTypes.map((type) => (
                     <SelectItem key={type} value={type}>
                       {type} ({statistics?.by_type[type] || 0})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            
+            {/* 难度筛选 */}
+            <div className="flex items-center gap-2 relative z-10">
+              <Select value={selectedDifficulty} onValueChange={(value) => setSelectedDifficulty(value as Difficulty | '全部')}>
+                <SelectTrigger className="min-w-[150px]">
+                  <SelectValue placeholder="选择难度" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="全部">全部难度</SelectItem>
+                  {allDifficulties.map((difficulty) => (
+                    <SelectItem key={difficulty} value={difficulty}>
+                      {difficulty}
                     </SelectItem>
                   ))}
                 </SelectContent>

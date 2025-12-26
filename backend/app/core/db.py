@@ -101,9 +101,39 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     error_message TEXT,
+                    mode TEXT,
+                    task_settings TEXT,
+                    generation_plan TEXT,
                     FOREIGN KEY (textbook_id) REFERENCES textbooks(textbook_id) ON DELETE CASCADE
                 )
             """)
+            
+            # 如果表已存在，检查并添加新列（用于升级现有数据库）
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
+            if cursor.fetchone():
+                cursor.execute("PRAGMA table_info(tasks)")
+                task_columns = [row[1] for row in cursor.fetchall()]
+                
+                # 添加 mode 列（如果不存在）
+                if 'mode' not in task_columns:
+                    try:
+                        cursor.execute("ALTER TABLE tasks ADD COLUMN mode TEXT")
+                    except sqlite3.OperationalError:
+                        pass
+                
+                # 添加 task_settings 列（如果不存在）
+                if 'task_settings' not in task_columns:
+                    try:
+                        cursor.execute("ALTER TABLE tasks ADD COLUMN task_settings TEXT")
+                    except sqlite3.OperationalError:
+                        pass
+                
+                # 添加 generation_plan 列（如果不存在）
+                if 'generation_plan' not in task_columns:
+                    try:
+                        cursor.execute("ALTER TABLE tasks ADD COLUMN generation_plan TEXT")
+                    except sqlite3.OperationalError:
+                        pass
             
             # 如果表已存在，检查并添加新列（用于升级现有数据库）
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='questions'")
@@ -237,6 +267,22 @@ class Database:
                 )
             """)
             
+            # 提示词表（存储系统提示词和用户提示词模板）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS prompts (
+                    prompt_id TEXT PRIMARY KEY,
+                    function_type TEXT NOT NULL,
+                    prompt_type TEXT NOT NULL,
+                    mode TEXT,
+                    content TEXT NOT NULL,
+                    parameters_json TEXT,
+                    description TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(function_type, prompt_type, mode)
+                )
+            """)
+            
             # 初始化默认配置（如果表为空）
             cursor.execute("SELECT COUNT(*) as count FROM ai_config")
             if cursor.fetchone()["count"] == 0:
@@ -249,6 +295,15 @@ class Database:
                     INSERT INTO ai_config (api_endpoint, api_key, model, updated_at)
                     VALUES (?, ?, ?, ?)
                 """, (default_endpoint, default_api_key, default_model, datetime.now().isoformat()))
+            
+            # 初始化默认提示词（如果表为空）
+            cursor.execute("SELECT COUNT(*) as count FROM prompts")
+            if cursor.fetchone()["count"] == 0:
+                try:
+                    from prompts.init_prompts import init_prompts
+                    init_prompts(force=False)
+                except Exception as e:
+                    print(f"初始化提示词失败（将在首次使用时初始化）: {e}")
             
             # 先运行数据库迁移（如果表已存在，迁移会添加新字段）
             # 必须在创建索引之前运行，确保所有列都存在
@@ -318,6 +373,12 @@ class Database:
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_knowledge_dependencies_target ON knowledge_dependencies(target_node_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_prompts_function_type ON prompts(function_type)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_prompts_function_prompt_mode ON prompts(function_type, prompt_type, mode)
             """)
             
             conn.commit()
@@ -681,15 +742,17 @@ class Database:
     def get_all_questions(self, file_id: Optional[str] = None, 
                           question_type: Optional[str] = None,
                           textbook_id: Optional[str] = None,
+                          difficulty: Optional[str] = None,
                           limit: Optional[int] = None,
                           offset: int = 0) -> List[Dict[str, Any]]:
         """
-        获取题目列表（支持按文件、题型和教材筛选）
+        获取题目列表（支持按文件、题型、教材和难度筛选）
         
         Args:
             file_id: 文件 ID（可选，如果提供则只返回该文件的题目）
             question_type: 题型（可选，如果提供则只返回该题型的题目）
             textbook_id: 教材 ID（可选，如果提供则只返回该教材的题目）
+            difficulty: 难度（可选，如果提供则只返回该难度的题目）
             limit: 限制返回数量（可选）
             offset: 偏移量（用于分页）
             
@@ -714,6 +777,10 @@ class Database:
             if textbook_id:
                 conditions.append("q.textbook_id = ?")
                 params.append(textbook_id)
+            
+            if difficulty:
+                conditions.append("q.difficulty = ?")
+                params.append(difficulty)
             
             where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
             
@@ -783,14 +850,16 @@ class Database:
     
     def get_question_count(self, file_id: Optional[str] = None, 
                            question_type: Optional[str] = None,
-                           textbook_id: Optional[str] = None) -> int:
+                           textbook_id: Optional[str] = None,
+                           difficulty: Optional[str] = None) -> int:
         """
-        获取题目总数（支持按文件、题型和教材筛选）
+        获取题目总数（支持按文件、题型、教材和难度筛选）
         
         Args:
             file_id: 文件 ID（可选）
             question_type: 题型（可选）
             textbook_id: 教材 ID（可选）
+            difficulty: 难度（可选）
             
         Returns:
             题目总数
@@ -812,6 +881,10 @@ class Database:
             if textbook_id:
                 conditions.append("textbook_id = ?")
                 params.append(textbook_id)
+            
+            if difficulty:
+                conditions.append("difficulty = ?")
+                params.append(difficulty)
             
             where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
             
@@ -1160,7 +1233,15 @@ class Database:
     # 注意：这些方法是同步的，可以在 FastAPI 的 BackgroundTasks 中使用
     # 如果需要真正的异步操作，可以考虑使用 aiosqlite 库
     
-    def create_task(self, task_id: str, textbook_id: str, total_files: int = 0) -> bool:
+    def create_task(
+        self, 
+        task_id: str, 
+        textbook_id: str, 
+        total_files: int = 0,
+        mode: Optional[str] = None,
+        task_settings: Optional[Dict[str, Any]] = None,
+        generation_plan: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """
         创建生成任务
         
@@ -1168,6 +1249,9 @@ class Database:
             task_id: 任务 ID
             textbook_id: 教材 ID
             total_files: 总文件数
+            mode: 出题模式（可选）
+            task_settings: 任务设定（可选）
+            generation_plan: 生成计划（可选）
             
         Returns:
             是否成功创建
@@ -1176,10 +1260,14 @@ class Database:
             cursor = conn.cursor()
             now = datetime.now().isoformat()
             try:
+                # 将 JSON 对象转换为字符串
+                task_settings_json = json.dumps(task_settings, ensure_ascii=False) if task_settings else None
+                generation_plan_json = json.dumps(generation_plan, ensure_ascii=False) if generation_plan else None
+                
                 cursor.execute("""
-                    INSERT INTO tasks (task_id, textbook_id, status, progress, total_files, created_at, updated_at)
-                    VALUES (?, ?, 'PENDING', 0.0, ?, ?, ?)
-                """, (task_id, textbook_id, total_files, now, now))
+                    INSERT INTO tasks (task_id, textbook_id, status, progress, total_files, created_at, updated_at, mode, task_settings, generation_plan)
+                    VALUES (?, ?, 'PENDING', 0.0, ?, ?, ?, ?, ?, ?)
+                """, (task_id, textbook_id, total_files, now, now, mode, task_settings_json, generation_plan_json))
                 conn.commit()
                 return True
             except sqlite3.IntegrityError:
@@ -1200,7 +1288,19 @@ class Database:
             cursor.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
             row = cursor.fetchone()
             if row:
-                return dict(row)
+                task_dict = dict(row)
+                # 解析 JSON 字段
+                if task_dict.get("task_settings"):
+                    try:
+                        task_dict["task_settings"] = json.loads(task_dict["task_settings"])
+                    except (json.JSONDecodeError, TypeError):
+                        task_dict["task_settings"] = None
+                if task_dict.get("generation_plan"):
+                    try:
+                        task_dict["generation_plan"] = json.loads(task_dict["generation_plan"])
+                    except (json.JSONDecodeError, TypeError):
+                        task_dict["generation_plan"] = None
+                return task_dict
             return None
     
     def get_all_tasks(self, textbook_id: Optional[str] = None, 
@@ -1382,6 +1482,32 @@ class Database:
                 SET {', '.join(updates)}
                 WHERE task_id = ?
             """, params)
+            
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def update_task_generation_plan(self, task_id: str, generation_plan: Dict[str, Any]) -> bool:
+        """
+        更新任务的生成计划
+        
+        Args:
+            task_id: 任务 ID
+            generation_plan: 生成计划（字典）
+            
+        Returns:
+            是否成功更新
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+            
+            generation_plan_json = json.dumps(generation_plan, ensure_ascii=False)
+            
+            cursor.execute("""
+                UPDATE tasks
+                SET generation_plan = ?, updated_at = ?
+                WHERE task_id = ?
+            """, (generation_plan_json, now, task_id))
             
             conn.commit()
             return cursor.rowcount > 0
@@ -2000,6 +2126,232 @@ class Database:
             """, (node_id, node_id))
             conn.commit()
             return True
+    
+    # ========== 提示词相关方法 ==========
+    
+    def create_prompt(
+        self,
+        prompt_id: str,
+        function_type: str,
+        prompt_type: str,
+        content: str,
+        mode: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None
+    ) -> bool:
+        """
+        创建或更新提示词
+        
+        Args:
+            prompt_id: 提示词 ID
+            function_type: 功能类型（knowledge_extraction, question_generation_homework, question_generation_advanced）
+            prompt_type: 提示词类型（system, user）
+            content: 提示词内容
+            mode: 模式（仅用于question_generation类型，如"课后习题"、"提高习题"）
+            parameters: 参数定义（JSON格式，描述提示词中需要的参数）
+            description: 描述信息
+            
+        Returns:
+            是否成功创建
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+            parameters_json = json.dumps(parameters, ensure_ascii=False) if parameters else None
+            
+            try:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO prompts 
+                    (prompt_id, function_type, prompt_type, mode, content, parameters_json, description, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 
+                        COALESCE((SELECT created_at FROM prompts WHERE prompt_id = ?), ?),
+                        ?)
+                """, (prompt_id, function_type, prompt_type, mode, content, parameters_json, description, prompt_id, now, now))
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError as e:
+                print(f"创建提示词失败: {e}")
+                return False
+    
+    def get_prompt(self, prompt_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取提示词
+        
+        Args:
+            prompt_id: 提示词 ID
+            
+        Returns:
+            提示词字典，如果不存在则返回 None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM prompts WHERE prompt_id = ?", (prompt_id,))
+            row = cursor.fetchone()
+            if row:
+                result = dict(row)
+                if result.get("parameters_json"):
+                    try:
+                        result["parameters"] = json.loads(result["parameters_json"])
+                    except:
+                        result["parameters"] = None
+                else:
+                    result["parameters"] = None
+                return result
+            return None
+    
+    def get_prompt_by_function(
+        self,
+        function_type: str,
+        prompt_type: str,
+        mode: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        根据功能类型、提示词类型和模式获取提示词
+        
+        Args:
+            function_type: 功能类型
+            prompt_type: 提示词类型（system, user）
+            mode: 模式（可选）
+            
+        Returns:
+            提示词字典，如果不存在则返回 None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if mode:
+                cursor.execute("""
+                    SELECT * FROM prompts 
+                    WHERE function_type = ? AND prompt_type = ? AND mode = ?
+                """, (function_type, prompt_type, mode))
+            else:
+                cursor.execute("""
+                    SELECT * FROM prompts 
+                    WHERE function_type = ? AND prompt_type = ? AND mode IS NULL
+                """, (function_type, prompt_type))
+            
+            row = cursor.fetchone()
+            if row:
+                result = dict(row)
+                if result.get("parameters_json"):
+                    try:
+                        result["parameters"] = json.loads(result["parameters_json"])
+                    except:
+                        result["parameters"] = None
+                else:
+                    result["parameters"] = None
+                return result
+            return None
+    
+    def get_all_prompts(
+        self,
+        function_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        获取所有提示词列表
+        
+        Args:
+            function_type: 功能类型（可选，用于筛选）
+            
+        Returns:
+            提示词列表
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if function_type:
+                cursor.execute("""
+                    SELECT * FROM prompts 
+                    WHERE function_type = ?
+                    ORDER BY function_type, prompt_type, mode
+                """, (function_type,))
+            else:
+                cursor.execute("""
+                    SELECT * FROM prompts 
+                    ORDER BY function_type, prompt_type, mode
+                """)
+            
+            rows = cursor.fetchall()
+            prompts = []
+            for row in rows:
+                result = dict(row)
+                if result.get("parameters_json"):
+                    try:
+                        result["parameters"] = json.loads(result["parameters_json"])
+                    except:
+                        result["parameters"] = None
+                else:
+                    result["parameters"] = None
+                prompts.append(result)
+            return prompts
+    
+    def update_prompt(
+        self,
+        prompt_id: str,
+        content: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None
+    ) -> bool:
+        """
+        更新提示词
+        
+        Args:
+            prompt_id: 提示词 ID
+            content: 提示词内容（可选）
+            parameters: 参数定义（可选）
+            description: 描述信息（可选）
+            
+        Returns:
+            是否成功更新
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+            
+            updates = []
+            params = []
+            
+            if content is not None:
+                updates.append("content = ?")
+                params.append(content)
+            
+            if parameters is not None:
+                parameters_json = json.dumps(parameters, ensure_ascii=False)
+                updates.append("parameters_json = ?")
+                params.append(parameters_json)
+            
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+            
+            if not updates:
+                return False
+            
+            updates.append("updated_at = ?")
+            params.append(now)
+            params.append(prompt_id)
+            
+            cursor.execute(f"""
+                UPDATE prompts
+                SET {', '.join(updates)}
+                WHERE prompt_id = ?
+            """, params)
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def delete_prompt(self, prompt_id: str) -> bool:
+        """
+        删除提示词
+        
+        Args:
+            prompt_id: 提示词 ID
+            
+        Returns:
+            是否成功删除
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM prompts WHERE prompt_id = ?", (prompt_id,))
+            conn.commit()
+            return cursor.rowcount > 0
 
 
 # 全局数据库实例

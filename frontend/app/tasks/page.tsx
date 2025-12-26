@@ -25,7 +25,7 @@ interface Textbook {
 interface Task {
   task_id: string
   textbook_id: string
-  status: 'PENDING' | 'PROCESSING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  status: 'PLANNING' | 'PENDING' | 'PROCESSING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
   progress: number
   current_file: string | null
   total_files: number
@@ -33,11 +33,14 @@ interface Task {
   updated_at: string
   error_message: string | null
   textbook_name: string | null
+  mode?: string
+  generation_plan?: any
 }
 
 export default function TasksPage() {
   const [textbooks, setTextbooks] = useState<Textbook[]>([])
   const [selectedTextbookId, setSelectedTextbookId] = useState<string>('')
+  const [selectedMode, setSelectedMode] = useState<string>('课后习题')
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -51,10 +54,30 @@ export default function TasksPage() {
   const fetchTextbooks = async () => {
     try {
       const response = await fetch(getApiUrl('/textbooks'))
+      
+      // 先读取响应体为文本，避免多次读取的问题
+      const responseText = await response.text()
+      
       if (!response.ok) {
-        throw new Error('获取教材列表失败')
+        let errorMsg = '获取教材列表失败'
+        try {
+          const errorData = JSON.parse(responseText)
+          errorMsg = errorData.detail || errorData.message || errorMsg
+        } catch {
+          errorMsg = `HTTP ${response.status}: ${response.statusText}`
+        }
+        throw new Error(errorMsg)
       }
-      const data = await response.json()
+      
+      // 解析成功响应的 JSON
+      let data
+      try {
+        data = JSON.parse(responseText)
+      } catch (parseError) {
+        console.error('[获取教材列表] 解析响应 JSON 失败:', parseError)
+        throw new Error(`响应格式错误: ${responseText.substring(0, 200)}`)
+      }
+      
       setTextbooks(data)
     } catch (err) {
       console.error('获取教材列表失败:', err)
@@ -66,10 +89,30 @@ export default function TasksPage() {
     try {
       setLoading(true)
       const response = await fetch(getApiUrl('/tasks'))
+      
+      // 先读取响应体为文本，避免多次读取的问题
+      const responseText = await response.text()
+      
       if (!response.ok) {
-        throw new Error('获取任务列表失败')
+        let errorMsg = '获取任务列表失败'
+        try {
+          const errorData = JSON.parse(responseText)
+          errorMsg = errorData.detail || errorData.message || errorMsg
+        } catch {
+          errorMsg = `HTTP ${response.status}: ${response.statusText}`
+        }
+        throw new Error(errorMsg)
       }
-      const data = await response.json()
+      
+      // 解析成功响应的 JSON
+      let data
+      try {
+        data = JSON.parse(responseText)
+      } catch (parseError) {
+        console.error('[获取任务列表] 解析响应 JSON 失败:', parseError)
+        throw new Error(`响应格式错误: ${responseText.substring(0, 200)}`)
+      }
+      
       setTasks(data)
     } catch (err) {
       console.error('获取任务列表失败:', err)
@@ -79,28 +122,59 @@ export default function TasksPage() {
     }
   }, [])
 
-  const handleStartGeneration = async () => {
+  const handleStartExecution = async () => {
     if (!selectedTextbookId) {
-      alert('请先选择教材')
+      setError('请先选择教材')
       return
     }
 
     try {
       setCreating(true)
       setError(null)
-      const response = await fetch(getApiUrl('/tasks/generate-book'), {
+      
+      console.log('[任务执行] 开始执行任务', {
+        textbook_id: selectedTextbookId,
+        mode: selectedMode
+      })
+      
+      const response = await fetch(getApiUrl('/tasks/create-and-execute'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ textbook_id: selectedTextbookId }),
+        body: JSON.stringify({ 
+          textbook_id: selectedTextbookId,
+          mode: selectedMode
+        }),
       })
 
+      console.log('[任务执行] 响应状态:', response.status, response.statusText)
+
+      // 先读取响应体为文本，避免多次读取的问题
+      const responseText = await response.text()
+      
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.detail || '启动任务失败')
+        let errorDetail = '执行任务失败'
+        try {
+          // 尝试解析为 JSON
+          const errorData = JSON.parse(responseText)
+          errorDetail = errorData.detail || errorData.message || errorDetail
+          console.error('[任务执行] 错误响应:', errorData)
+        } catch (parseError) {
+          // 如果不是 JSON，直接使用文本
+          console.error('[任务执行] 错误响应文本:', responseText)
+          errorDetail = `HTTP ${response.status}: ${response.statusText}${responseText ? ` - ${responseText}` : ''}`
+        }
+        throw new Error(errorDetail)
       }
 
-      const data = await response.json()
-      alert(`任务已启动！任务 ID: ${data.task_id}`)
+      // 解析成功响应的 JSON
+      let data
+      try {
+        data = JSON.parse(responseText)
+        console.log('[任务执行] 任务创建成功:', data)
+      } catch (parseError) {
+        console.error('[任务执行] 解析响应 JSON 失败:', parseError)
+        throw new Error(`响应格式错误: ${responseText.substring(0, 200)}`)
+      }
       
       // 刷新任务列表
       await fetchTasks()
@@ -108,9 +182,10 @@ export default function TasksPage() {
       // 清空选择
       setSelectedTextbookId('')
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : '启动任务失败'
+      const errorMessage = err instanceof Error ? err.message : '执行任务失败'
+      console.error('[任务执行] 异常:', err)
       setError(errorMessage)
-      alert(errorMessage)
+      // 不显示 alert，使用页面上的错误提示
     } finally {
       setCreating(false)
     }
@@ -118,6 +193,8 @@ export default function TasksPage() {
 
   const getStatusIcon = useCallback((status: Task['status']) => {
     switch (status) {
+      case 'PLANNING':
+        return <Loader2 className="h-4 w-4 text-purple-500 animate-spin" />
       case 'PENDING':
         return <Clock className="h-4 w-4 text-yellow-500" />
       case 'PROCESSING':
@@ -137,6 +214,8 @@ export default function TasksPage() {
 
   const getStatusText = useCallback((status: Task['status']) => {
     switch (status) {
+      case 'PLANNING':
+        return '规划中'
       case 'PENDING':
         return '等待中'
       case 'PROCESSING':
@@ -198,55 +277,94 @@ export default function TasksPage() {
             创建新任务
           </h2>
           
-          <div className="flex flex-col sm:flex-row gap-4 items-end">
-            <div className="flex-1">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                选择教材
-              </label>
-              <Select value={selectedTextbookId} onValueChange={setSelectedTextbookId}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="请选择教材" />
-                </SelectTrigger>
-                <SelectContent>
-                  {textbooks.length === 0 ? (
-                    <SelectItem value="no-textbooks" disabled>
-                      暂无教材
-                    </SelectItem>
-                  ) : (
-                    textbooks.map((textbook) => (
-                      <SelectItem key={textbook.textbook_id} value={textbook.textbook_id}>
-                        {textbook.name}
-                        {textbook.file_count !== undefined && ` (${textbook.file_count} 个文件)`}
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                  选择教材
+                </label>
+                <Select value={selectedTextbookId} onValueChange={setSelectedTextbookId}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="请选择教材" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {textbooks.length === 0 ? (
+                      <SelectItem value="no-textbooks" disabled>
+                        暂无教材
                       </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
+                    ) : (
+                      textbooks.map((textbook) => (
+                        <SelectItem key={textbook.textbook_id} value={textbook.textbook_id}>
+                          {textbook.name}
+                          {textbook.file_count !== undefined && ` (${textbook.file_count} 个文件)`}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                  出题模式
+                </label>
+                <Select value={selectedMode} onValueChange={setSelectedMode}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="课后习题">课后习题</SelectItem>
+                    <SelectItem value="提高习题">提高习题</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             
-            <button
-              onClick={handleStartGeneration}
-              disabled={creating || !selectedTextbookId || textbooks.length === 0}
-              className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {creating ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  启动中...
-                </>
-              ) : (
-                <>
-                  <Play className="h-4 w-4" />
-                  开始全书出题
-                </>
-              )}
-            </button>
+            <div className="flex justify-end">
+              <button
+                onClick={handleStartExecution}
+                disabled={creating || !selectedTextbookId || textbooks.length === 0}
+                className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {creating ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    执行中...
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4" />
+                    开始执行任务
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {error && (
-            <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-400 text-sm">
-              {error}
-            </div>
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg"
+            >
+              <div className="flex items-start gap-3">
+                <XCircle className="h-5 w-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="font-medium text-red-800 dark:text-red-300 mb-1">
+                    执行任务失败
+                  </div>
+                  <div className="text-sm text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">
+                    {error}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setError(null)}
+                  className="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 flex-shrink-0"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </motion.div>
           )}
         </motion.div>
 
@@ -290,6 +408,9 @@ export default function TasksPage() {
                     </th>
                     <th className="text-left py-3 px-4 text-sm font-semibold text-slate-700 dark:text-slate-300">
                       教材名称
+                    </th>
+                    <th className="text-left py-3 px-4 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                      任务类型
                     </th>
                     <th className="text-left py-3 px-4 text-sm font-semibold text-slate-700 dark:text-slate-300">
                       状态
@@ -336,6 +457,7 @@ export default function TasksPage() {
           )}
         </motion.div>
       </div>
+
     </main>
   )
 }

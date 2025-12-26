@@ -9,7 +9,7 @@ import { getApiUrl } from '@/lib/api'
 interface Task {
   task_id: string
   textbook_id: string
-  status: 'PENDING' | 'PROCESSING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  status: 'PENDING' | 'PROCESSING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'PLANNING'
   progress: number
   current_file: string | null
   total_files: number
@@ -17,6 +17,7 @@ interface Task {
   updated_at: string
   error_message: string | null
   textbook_name: string | null
+  mode?: string
 }
 
 interface TaskRowProps {
@@ -183,6 +184,11 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
           {task.textbook_name || '未知教材'}
         </td>
         <td className="py-3 px-4">
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300">
+            {task.mode || '课后习题'}
+          </span>
+        </td>
+        <td className="py-3 px-4">
           <div className="flex items-center gap-2">
             {getStatusIcon(displayStatus as Task['status'])}
             <span className="text-sm text-slate-700 dark:text-slate-300">
@@ -291,7 +297,7 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
       </tr>
       {(task.status === 'PROCESSING' || task.status === 'PAUSED') && isOpen && (
         <tr>
-          <td colSpan={8} className="p-0">
+          <td colSpan={9} className="p-0">
             <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
               <div className="flex items-center gap-2 mb-2">
                 <FileText className="h-4 w-4 text-slate-500" />

@@ -100,16 +100,16 @@ async def process_full_textbook_task(task_id: str):
             )
             return
         
-        # 4. 更新任务状态和总文件数
+        # 4. 更新任务状态和总文件数（规划阶段，状态保持为 PLANNING）
         total_files = len(md_files)
         logger.info(f"[任务] 开始处理文件 - task_id: {task_id}, 文件数: {total_files}")
         
-        db.update_task(task_id, status="PROCESSING", total_files=total_files)
+        db.update_task(task_id, status="PLANNING", total_files=total_files)
         await task_progress_manager.push_progress(
             task_id=task_id,
             progress=0.0,
-            message=f"开始处理 {total_files} 个文件",
-            status="PROCESSING"
+            message=f"开始处理 {total_files} 个文件，准备规划...",
+            status="PLANNING"
         )
         
         # 5. 初始化处理器
@@ -119,14 +119,14 @@ async def process_full_textbook_task(task_id: str):
             max_tokens_before_split=1500
         )
         
-        # 6. 第一阶段：处理所有文件，收集所有切片的元数据
+        # 6. 第一阶段：处理所有文件，收集所有切片的元数据（规划阶段）
         logger.info(f"[任务] 第一阶段开始 - 处理文件并收集切片信息")
         
         await task_progress_manager.push_progress(
             task_id=task_id,
             progress=0.05,
             message="正在处理所有文件并收集切片信息...",
-            status="PROCESSING"
+            status="PLANNING"
         )
         
         # 存储所有文件的所有 chunks，并收集切片信息
@@ -185,13 +185,15 @@ async def process_full_textbook_task(task_id: str):
                 for chunk_index, chunk in enumerate(chunks):
                     chunk_id = chunk_index_to_id.get(chunk_index)
                     if chunk_id:
+                        # 确保 chunk_id 为整数类型
+                        chunk_id = int(chunk_id)
                         metadata = chunk.get("metadata", {})
                         chapter_name = processor.get_chapter_name(metadata)
                         content = chunk.get("content", "")
                         content_summary = content[:500] if len(content) > 500 else content  # 摘要前500字符
                         
                         all_chunks_info.append({
-                            "chunk_id": chunk_id,
+                            "chunk_id": chunk_id,  # 确保为整数类型
                             "file_id": file_id,  # 添加 file_id，用于按文件分组
                             "chapter_name": chapter_name or "未命名章节",
                             "content_summary": content_summary
@@ -219,51 +221,118 @@ async def process_full_textbook_task(task_id: str):
         
         logger.info(f"[任务] 第一阶段完成 - 总切片数: {len(all_chunks_info)}")
         
-        # 7. 第二阶段：调用 plan_generation_tasks 获取生成计划
-        logger.info(f"[任务] 第二阶段开始 - 规划生成任务")
+        # 7. 第二阶段：从任务中读取生成计划（如果已规划）或重新规划
+        logger.info(f"[任务] 第二阶段开始 - 读取生成计划")
         
-        await task_progress_manager.push_progress(
-            task_id=task_id,
-            progress=0.1,
-            message=f"正在规划生成任务（共 {len(all_chunks_info)} 个切片）...",
-            status="PROCESSING"
-        )
+        # 检查任务是否已有规划
+        task_plan = task.get("generation_plan")
+        plan_by_chunk_id = {}  # 初始化，确保变量存在
+        generation_plan = None  # 初始化，确保变量存在
         
-        try:
-            # 创建 OpenRouter 客户端
-            client = OpenRouterClient()
+        if task_plan:
+            # 使用已有的规划
+            logger.info(f"[任务] 使用已有规划 - task_id: {task_id}")
+            from app.models.generation_plan import TextbookGenerationPlan
+            try:
+                generation_plan = TextbookGenerationPlan(**task_plan)
+                # 确保 chunk_id 类型为 int，用于匹配
+                plan_by_chunk_id = {int(plan.chunk_id): plan for plan in generation_plan.plans}
+                logger.info(f"[任务] 规划读取完成 - 规划题目数: {generation_plan.total_questions}, 题型分布: {generation_plan.type_distribution}")
+                logger.info(f"[任务] 规划映射表大小: {len(plan_by_chunk_id)}, 切片总数: {len(all_chunks_info)}")
+                # 验证规划覆盖情况
+                all_chunk_ids = {int(chunk_info["chunk_id"]) for chunk_info in all_chunks_info}
+                plan_chunk_ids = set(plan_by_chunk_id.keys())
+                missing_chunks = all_chunk_ids - plan_chunk_ids
+                if missing_chunks:
+                    logger.warning(f"[任务] 规划中缺少以下切片 ID: {missing_chunks}")
+                extra_chunks = plan_chunk_ids - all_chunk_ids
+                if extra_chunks:
+                    logger.warning(f"[任务] 规划中包含多余的切片 ID: {extra_chunks}")
+            except Exception as e:
+                logger.warning(f"[任务] 规划数据格式错误，重新规划 - 错误: {str(e)}", exc_info=True)
+                task_plan = None
+                generation_plan = None
+        
+        if not task_plan:
+            # 如果没有规划，重新规划
+            logger.info(f"[任务] 重新规划生成任务")
             
-            # 调用规划任务
-            generation_plan = await client.plan_generation_tasks(
-                textbook_name=textbook_name,
-                chunks_info=all_chunks_info
+            # 确保任务状态为 PLANNING
+            db.update_task_status(task_id, "PLANNING")
+            
+            await task_progress_manager.push_progress(
+                task_id=task_id,
+                progress=0.1,
+                message=f"正在规划生成任务（共 {len(all_chunks_info)} 个切片）...",
+                status="PLANNING"
             )
             
-            # 构建 chunk_id 到规划的映射，方便后续查找
-            plan_by_chunk_id = {plan.chunk_id: plan for plan in generation_plan.plans}
-            
-            logger.info(f"[任务] 第二阶段完成 - 规划题目数: {generation_plan.total_questions}, 题型分布: {generation_plan.type_distribution}")
-            print(f"规划完成：共规划 {generation_plan.total_questions} 道题目，题型分布：{generation_plan.type_distribution}")
-            
+            try:
+                # 创建 OpenRouter 客户端
+                client = OpenRouterClient()
+                
+                # 获取任务的模式
+                task_mode = task.get("mode", "课后习题")
+                
+                # 调用规划任务
+                generation_plan = await client.plan_generation_tasks(
+                    textbook_name=textbook_name,
+                    chunks_info=all_chunks_info,
+                    mode=task_mode
+                )
+                
+                # 保存规划到任务
+                plan_dict = generation_plan.model_dump()
+                db.update_task_generation_plan(task_id, plan_dict)
+                
+                # 构建 chunk_id 到规划的映射，方便后续查找
+                # 确保 chunk_id 类型为 int，用于匹配
+                plan_by_chunk_id = {int(plan.chunk_id): plan for plan in generation_plan.plans}
+                
+                logger.info(f"[任务] 规划完成 - 规划题目数: {generation_plan.total_questions}, 题型分布: {generation_plan.type_distribution}")
+                logger.info(f"[任务] 规划映射表大小: {len(plan_by_chunk_id)}, 切片总数: {len(all_chunks_info)}")
+                # 验证规划覆盖情况
+                all_chunk_ids = {int(chunk_info["chunk_id"]) for chunk_info in all_chunks_info}
+                plan_chunk_ids = set(plan_by_chunk_id.keys())
+                missing_chunks = all_chunk_ids - plan_chunk_ids
+                if missing_chunks:
+                    logger.warning(f"[任务] 规划中缺少以下切片 ID: {missing_chunks}")
+                extra_chunks = plan_chunk_ids - all_chunk_ids
+                if extra_chunks:
+                    logger.warning(f"[任务] 规划中包含多余的切片 ID: {extra_chunks}")
+                print(f"规划完成：共规划 {generation_plan.total_questions} 道题目，题型分布：{generation_plan.type_distribution}")
+                
+                # 规划完成，更新状态为 PROCESSING，准备生成题目
+                db.update_task_status(task_id, "PROCESSING")
+                await task_progress_manager.push_progress(
+                    task_id=task_id,
+                    progress=0.15,
+                    message=f"✅ 规划完成：共规划 {generation_plan.total_questions} 道题目，开始生成...",
+                    status="PROCESSING"
+                )
+                
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"[任务] 规划任务失败 - task_id: {task_id}, 错误: {error_msg}", exc_info=True)
+                print(f"错误：规划生成任务失败: {error_msg}")
+                db.update_task_status(task_id, "FAILED", f"规划生成任务失败: {error_msg}")
+                await task_progress_manager.push_progress(
+                    task_id=task_id,
+                    progress=0.0,
+                    message=f"任务失败：规划生成任务失败: {error_msg}",
+                    status="FAILED"
+                )
+                return
+        else:
+            # 使用已有规划，直接进入生成阶段
+            # 更新状态为 PROCESSING
+            db.update_task_status(task_id, "PROCESSING")
             await task_progress_manager.push_progress(
                 task_id=task_id,
                 progress=0.15,
-                message=f"规划完成：共规划 {generation_plan.total_questions} 道题目",
+                message=f"✅ 使用已有规划：共规划 {generation_plan.total_questions} 道题目，开始生成...",
                 status="PROCESSING"
             )
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"[任务] 规划任务失败 - task_id: {task_id}, 错误: {error_msg}", exc_info=True)
-            print(f"错误：规划生成任务失败: {error_msg}")
-            db.update_task_status(task_id, "FAILED", f"规划生成任务失败: {error_msg}")
-            await task_progress_manager.push_progress(
-                task_id=task_id,
-                progress=0.0,
-                message=f"任务失败：规划生成任务失败: {error_msg}",
-                status="FAILED"
-            )
-            return
         
         # 8. 第三阶段：根据计划生成题目
         logger.info(f"[任务] 第三阶段开始 - 根据计划生成题目")
@@ -335,7 +404,16 @@ async def process_full_textbook_task(task_id: str):
                         return
                     
                     # 从计划中查找该切片的规划
-                    chunk_plan = plan_by_chunk_id.get(chunk_id)
+                    # 确保 chunk_id 类型为 int，用于匹配
+                    chunk_id_int = int(chunk_id) if chunk_id is not None else None
+                    chunk_plan = plan_by_chunk_id.get(chunk_id_int) if chunk_id_int is not None else None
+                    
+                    # 添加调试日志
+                    if chunk_plan is None:
+                        logger.debug(f"[任务] 切片 {chunk_id} (int: {chunk_id_int}) 未在规划中找到，规划映射表大小: {len(plan_by_chunk_id)}")
+                        if len(plan_by_chunk_id) > 0:
+                            sample_keys = list(plan_by_chunk_id.keys())[:5]
+                            logger.debug(f"[任务] 规划映射表示例键（前5个）: {sample_keys}, 类型: {[type(k) for k in sample_keys]}")
                     
                     # 如果该切片在规划中需要生成题目，则根据规划生成
                     if chunk_plan and chunk_plan.question_count > 0:
@@ -358,10 +436,14 @@ async def process_full_textbook_task(task_id: str):
                                     logger.info(f"[任务] 重试生成切片题目 - chunk_id: {chunk_id}, 重试次数: {retry_attempt}/{max_retries}")
                                     print(f"重试生成切片 {chunk_id} 的题目（第 {retry_attempt} 次重试）")
                                 
+                                # 获取任务的模式
+                                task_mode = task.get("mode", "课后习题")
+                                
                                 questions_data = await generate_questions_for_chunk(
                                     chunk,
                                     type_distribution=chunk_plan.type_distribution,
-                                    textbook_name=textbook_name
+                                    textbook_name=textbook_name,
+                                    mode=task_mode
                                 )
                                 
                                 # 检查是否生成成功（至少生成了一道题目）

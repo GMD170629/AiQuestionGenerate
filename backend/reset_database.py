@@ -426,6 +426,22 @@ def initialize_ai_config(conn: sqlite3.Connection):
     print("  ✓ 初始化 AI 配置表")
 
 
+def initialize_prompts(conn: sqlite3.Connection):
+    """初始化提示词表"""
+    try:
+        from prompts.init_prompts import init_prompts
+        
+        print("  正在初始化提示词...")
+        count = init_prompts(force=False)
+        if count > 0:
+            print(f"  ✓ 初始化提示词表（共 {count} 个提示词）")
+        else:
+            print("  ✓ 提示词表已有数据，跳过初始化")
+    except Exception as e:
+        print(f"  ✗ 初始化提示词失败: {e}")
+        # 不抛出异常，允许数据库初始化继续
+
+
 def reset_database(db_path: str = "data/question_generator.db", force: bool = False):
     """
     重置数据库：检查表结构，如果不符则删除所有表并重建
@@ -502,6 +518,10 @@ def reset_database(db_path: str = "data/question_generator.db", force: bool = Fa
         
         # 4. 初始化 AI 配置
         initialize_ai_config(conn)
+        print()
+        
+        # 5. 初始化提示词
+        initialize_prompts(conn)
         print()
         
         print("=" * 60)

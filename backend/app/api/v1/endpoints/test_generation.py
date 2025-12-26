@@ -14,14 +14,13 @@ from app.services.ai_service import (
     build_context_from_chunks,
     get_chapter_name_from_chunks,
 )
-# 临时保留从 generator 导入（后续逐步重构）
 from app.services.ai_service import (
     extract_knowledge_from_chunks,
-    build_knowledge_based_prompt,
-    build_task_specific_prompt,
     build_system_prompt,
     calculate_max_tokens_for_questions,
+    OpenRouterClient,
 )
+from prompts import PromptManager
 from prompts import PromptManager
 from app.core.db import db
 from app.core.cache import document_cache
@@ -85,53 +84,41 @@ async def test_generation(request: TestGenerationRequest):
         knowledge_info = extract_knowledge_from_chunks(chunk_list)
         
         # 7. 构建提示词
-        knowledge_prompt = ""
-        if knowledge_info.get("core_concept"):
-            knowledge_prompt = build_knowledge_based_prompt(knowledge_info, chunk_list)
-        else:
-            # 如果没有知识点信息，只提供基本信息
-            knowledge_prompt = "## 教材信息：\n"
-            if textbook_name:
-                knowledge_prompt += f"**教材名称**：{textbook_name}\n"
-
         # 提取章节名称
         chapter_name = get_chapter_name_from_chunks(chunk_list)
-        if chapter_name:
-            knowledge_prompt += f"\n**章节**：{chapter_name}\n"
         
-        # 构建题型专用提示词（具体任务要求）
+        # 验证题型列表不能为空
         question_types = request.question_types or ["单选题", "多选题", "判断题"]
-        adaptive_mode = not request.question_types or len(request.question_types) == 0
+        if not question_types or len(question_types) == 0:
+            raise HTTPException(status_code=400, detail="question_types 不能为空，必须指定要生成的题型")
+        
         # 测试接口默认只生成中等和困难题目，不生成简单题目
         allowed_difficulties = ["中等", "困难"]
-        task_prompt = build_task_specific_prompt(
-            question_types if not adaptive_mode else [],
-            request.question_count,
-            context=None,
-            adaptive=adaptive_mode,
-            knowledge_context=knowledge_info if knowledge_info.get("core_concept") else None,
-            allowed_difficulties=allowed_difficulties
-        )
         
-        # 构建连贯性说明
+        # 构建完整的用户提示词（所有内容在一个字符串中）
         core_concept = knowledge_info.get("core_concept")
+        bloom_level = knowledge_info.get("bloom_level")
+        knowledge_summary = knowledge_info.get("knowledge_summary")
         prerequisites_context = knowledge_info.get("prerequisites_context", [])
-        coherence_prompt = PromptManager.build_coherence_prompt(
-            prerequisites_context=prerequisites_context,
-            core_concept=core_concept
-        )
+        confusion_points = knowledge_info.get("confusion_points", [])
+        application_scenarios = knowledge_info.get("application_scenarios", [])
+        reference_content = selected_chunk.get("content", "")
         
-        # 构建用户提示词
-        user_prompt = PromptManager.build_user_prompt_base(
-            adaptive=adaptive_mode,
+        user_prompt = PromptManager.build_question_generation_user_prompt(
             question_count=request.question_count,
+            question_types=question_types,
             chapter_name=chapter_name,
-            core_concept=None,  # 已在 knowledge_prompt 中包含
-            knowledge_prompt=knowledge_prompt,
-            prerequisites_prompt="",  # 已在 knowledge_prompt 中包含
-            coherence_prompt=coherence_prompt,
-            task_prompt=task_prompt,
-            context=None  # 不使用原始文本上下文
+            core_concept=core_concept,
+            bloom_level=bloom_level,
+            knowledge_summary=knowledge_summary,
+            prerequisites_context=prerequisites_context,
+            confusion_points=confusion_points,
+            application_scenarios=application_scenarios,
+            reference_content=reference_content,
+            allowed_difficulties=allowed_difficulties,
+            strict_plan_mode=False,  # 测试接口不使用严格模式
+            textbook_name=textbook_name,
+            mode=None  # 测试接口不指定模式，使用默认
         )
         
         # 构建系统提示词（包含通用规则和题型要求）
@@ -161,8 +148,7 @@ async def test_generation(request: TestGenerationRequest):
         # 使用统一的 token 限制计算函数
         max_tokens = calculate_max_tokens_for_questions(
             request.question_count,
-            model=client.model,
-            adaptive_mode=not request.question_types or len(request.question_types) == 0
+            model=client.model
         )
         
         payload = {
@@ -294,9 +280,6 @@ async def test_generation(request: TestGenerationRequest):
                     "prompts": {
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
-                        "knowledge_prompt": knowledge_prompt,
-                        "task_prompt": task_prompt,
-                        "coherence_prompt": coherence_prompt,
                     },
                     "llm_response": {
                         "raw_response": raw_response,

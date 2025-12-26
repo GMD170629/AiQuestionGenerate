@@ -231,27 +231,6 @@ DEV_MODE=false
 - **[全书题目生成系统架构与流程](./docs/全书题目生成系统架构与流程.md)** - 全书题目生成系统的完整架构设计、数据流和 API 接口说明
 - **[知识点系统执行流程](./docs/知识点系统执行流程.md)** - 知识点提取和知识图谱构建的执行流程
 
-### 代码组织规范
-
-项目遵循领域驱动设计 (DDD) 和整洁代码 (Clean Code) 准则：
-
-#### 后端架构
-- **Controller 层** (`app/api/`) - API 路由入口，仅负责请求处理和响应
-- **Service 层** (`app/services/`) - 业务逻辑封装
-- **Repository 层** (`app/core/db.py`) - 数据持久化
-- **Model 层** (`app/models/`) - 数据模型定义
-- **Schema 层** (`app/schemas/`) - API 请求/响应模型
-
-#### 前端架构
-- **页面层** (`app/`) - Next.js App Router 页面路由
-- **组件层** (`components/`) - 可复用 UI 组件，按功能分目录
-- **Hooks 层** (`hooks/`) - 自定义 React Hooks
-- **工具层** (`lib/`) - API 客户端、工具函数等
-
-#### AI 提示词管理
-- 所有 AI 系统提示词统一存放在 `backend/prompts/` 目录
-- 使用 `PromptManager` 统一管理，避免硬编码
-
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！

@@ -17,6 +17,11 @@ class ChunkGenerationPlan(BaseModel):
         description="切片 ID"
     )
     
+    chapter_name: str = Field(
+        default="未命名章节",
+        description="切片标题/章节名称（用于展示）"
+    )
+    
     question_count: int = Field(
         ...,
         ge=1,

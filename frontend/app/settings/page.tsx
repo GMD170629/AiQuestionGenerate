@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Settings, Save, AlertCircle, CheckCircle2, Trash2, Code, AlertTriangle } from 'lucide-react'
+import { Settings, Save, AlertCircle, CheckCircle2, Trash2, Code, AlertTriangle, RotateCcw } from 'lucide-react'
 import { getApiUrl } from '@/lib/api'
 
 interface AIConfig {
@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
   const [devMode, setDevMode] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [restoringPrompts, setRestoringPrompts] = useState(false)
 
   useEffect(() => {
     fetchConfig()
@@ -118,6 +119,36 @@ export default function SettingsPage() {
       setMessage({ type: 'error', text: '清空数据失败：网络错误' })
     } finally {
       setClearing(false)
+    }
+  }
+
+  const handleRestorePrompts = async () => {
+    if (!confirm('⚠️ 确认：此操作将还原所有提示词到默认值！\n\n当前数据库中的所有提示词将被覆盖为系统默认值。\n\n确定要继续吗？')) {
+      return
+    }
+
+    try {
+      setRestoringPrompts(true)
+      setMessage(null)
+      
+      const response = await fetch(getApiUrl('/dev/restore-prompts'), {
+        method: 'POST',
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setMessage({ 
+          type: 'success', 
+          text: `提示词还原成功！共还原 ${data.count} 个提示词。` 
+        })
+      } else {
+        const error = await response.json()
+        setMessage({ type: 'error', text: error.detail || '还原提示词失败' })
+      }
+    } catch (error) {
+      setMessage({ type: 'error', text: '还原提示词失败：网络错误' })
+    } finally {
+      setRestoringPrompts(false)
     }
   }
 
@@ -320,25 +351,55 @@ export default function SettingsPage() {
               </p>
             </div>
 
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={handleClearAll}
-              disabled={clearing}
-              className="flex items-center gap-2 px-6 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {clearing ? (
-                <>
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                  <span>清空中...</span>
-                </>
-              ) : (
-                <>
-                  <Trash2 className="h-5 w-5" />
-                  <span>清空所有数据</span>
-                </>
-              )}
-            </motion.button>
+            <div className="space-y-3">
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleClearAll}
+                disabled={clearing}
+                className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {clearing ? (
+                  <>
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                    <span>清空中...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-5 w-5" />
+                    <span>清空所有数据</span>
+                  </>
+                )}
+              </motion.button>
+
+              <div className="border-t border-red-200 dark:border-red-800 pt-3">
+                <h4 className="text-sm font-medium text-red-900 dark:text-red-100 mb-2">
+                  还原提示词
+                </h4>
+                <p className="text-xs text-red-700 dark:text-red-300 mb-3">
+                  将数据库中的所有提示词还原为系统默认值（从 prompts/default_prompts.py 读取）
+                </p>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleRestorePrompts}
+                  disabled={restoringPrompts}
+                  className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-orange-600 text-white rounded-lg font-medium hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {restoringPrompts ? (
+                    <>
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                      <span>还原中...</span>
+                    </>
+                  ) : (
+                    <>
+                      <RotateCcw className="h-5 w-5" />
+                      <span>还原提示词到默认值</span>
+                    </>
+                  )}
+                </motion.button>
+              </div>
+            </div>
           </motion.div>
         )}
       </div>

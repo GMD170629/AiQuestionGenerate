@@ -14,6 +14,13 @@ const USE_PROXY =
   process.env.NEXT_PUBLIC_USE_PROXY === 'true' ||
   !process.env.NEXT_PUBLIC_API_URL;
 
+// 调试日志：输出代理配置状态
+if (typeof window !== 'undefined') {
+  console.log('[API Config] USE_PROXY:', USE_PROXY)
+  console.log('[API Config] NEXT_PUBLIC_USE_PROXY:', process.env.NEXT_PUBLIC_USE_PROXY)
+  console.log('[API Config] NEXT_PUBLIC_API_URL:', process.env.NEXT_PUBLIC_API_URL)
+}
+
 // 判断是否使用 API 路由代理 SSE（对于流式响应，使用 API 路由更可靠）
 const USE_API_ROUTE_FOR_SSE = true;
 
@@ -44,19 +51,25 @@ export function getApiUrl(path: string, useApiRoute: boolean = false): string {
     const match = normalizedPath.match(/^\/tasks\/([^/]+)\/progress$/);
     if (match) {
       const taskId = match[1];
-      return `/api/tasks/${taskId}/progress`;
+      const url = `/api/tasks/${taskId}/progress`;
+      console.log('[getApiUrl] SSE 路由:', { path, normalizedPath, useApiRoute, result: url });
+      return url;
     }
   }
   
   // 如果使用代理模式，直接拼接相对路径
   if (USE_PROXY) {
-    return `/api${normalizedPath}`;
+    const url = `/api${normalizedPath}`;
+    console.log('[getApiUrl] 代理模式:', { path, normalizedPath, USE_PROXY, result: url });
+    return url;
   }
   
   // 否则使用原来的逻辑
   const baseUrl = API_BASE_URL.endsWith('/') 
     ? API_BASE_URL.slice(0, -1) 
     : API_BASE_URL;
-  return `${baseUrl}${normalizedPath}`;
+  const url = `${baseUrl}${normalizedPath}`;
+  console.log('[getApiUrl] 直接模式:', { path, normalizedPath, USE_PROXY, API_BASE_URL, baseUrl, result: url });
+  return url;
 }
 

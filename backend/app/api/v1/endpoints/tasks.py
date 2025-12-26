@@ -4,6 +4,8 @@
 
 import asyncio
 import uuid
+import logging
+import traceback
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -15,6 +17,11 @@ from app.schemas import TextbookGenerationRequest
 from app.core.task_manager import task_manager
 from app.core.task_progress import task_progress_manager
 from app.services.task_service import process_full_textbook_task
+from pydantic import BaseModel, Field
+from typing import Dict, Any
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tasks", tags=["任务管理"])
 
@@ -487,25 +494,292 @@ async def cancel_task(task_id: str):
 
 @router.post("/generate-book")
 async def generate_book(
-    request: TextbookGenerationRequest,
+    request: TextbookGenerationRequest
+):
+    """
+    生成全书出题规划（不创建任务）
+    
+    当用户选择教材点击规划时：
+    1. 处理所有文件并收集切片信息
+    2. 调用 AI 进行出题规划
+    3. 返回规划结果，用户可以编辑后提交执行
+    
+    Args:
+        request: 教材生成请求，包含 textbook_id、mode、task_settings
+        
+    Returns:
+        规划结果（不包含任务信息）
+    """
+    try:
+        logger.info(f"[生成规划] 开始处理请求 - textbook_id: {request.textbook_id}, mode: {request.mode}")
+        
+        # 1. 检查教材是否存在
+        logger.info(f"[生成规划] 步骤1: 检查教材是否存在 - textbook_id: {request.textbook_id}")
+        textbook = db.get_textbook(request.textbook_id)
+        if not textbook:
+            logger.error(f"[生成规划] 教材不存在 - textbook_id: {request.textbook_id}")
+            raise HTTPException(status_code=404, detail="教材不存在")
+        
+        textbook_name = textbook.get("name", "未命名教材")
+        logger.info(f"[生成规划] 教材信息获取成功 - 名称: {textbook_name}")
+        
+        # 2. 获取教材下的文件数量
+        logger.info(f"[生成规划] 步骤2: 获取教材文件列表 - textbook_id: {request.textbook_id}")
+        files = db.get_textbook_files(request.textbook_id)
+        logger.info(f"[生成规划] 获取到文件列表 - 总数: {len(files)}")
+        
+        md_files = [f for f in files if f.get("file_format", "").lower() in [".md", ".markdown"]]
+        total_files = len(md_files)
+        logger.info(f"[生成规划] Markdown 文件数量 - 总数: {total_files}")
+        
+        if total_files == 0:
+            logger.error(f"[生成规划] 教材中没有 Markdown 文件 - textbook_id: {request.textbook_id}")
+            raise HTTPException(status_code=400, detail="教材中没有 Markdown 文件")
+        
+        # 3. 处理文件并收集切片信息
+        logger.info(f"[生成规划] 步骤3: 处理文件并收集切片信息")
+        try:
+            from app.services.markdown_service import MarkdownProcessor
+            from pathlib import Path
+            logger.info(f"[生成规划] 导入模块成功")
+        except ImportError as e:
+            error_msg = f"导入模块失败: {str(e)}"
+            logger.error(f"[生成规划] {error_msg}")
+            logger.error(f"[生成规划] 导入错误堆栈:\n{traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        try:
+            processor = MarkdownProcessor(
+                chunk_size=1200,
+                chunk_overlap=200,
+                max_tokens_before_split=1500
+            )
+            logger.info(f"[生成规划] MarkdownProcessor 初始化完成")
+        except Exception as e:
+            error_msg = f"MarkdownProcessor 初始化失败: {str(e)}"
+            logger.error(f"[生成规划] {error_msg}")
+            logger.error(f"[生成规划] 初始化错误堆栈:\n{traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        all_chunks_info = []
+        processed_files = 0
+        failed_files = 0
+        
+        for idx, file_info in enumerate(md_files, 1):
+            file_id = file_info.get("file_id")
+            filename = file_info.get("filename", file_id)
+            file_path = file_info.get("file_path")
+            
+            logger.info(f"[生成规划] 处理文件 {idx}/{total_files} - filename: {filename}, file_id: {file_id}")
+            
+            if not file_path:
+                logger.warning(f"[生成规划] 文件缺少路径 - filename: {filename}, file_id: {file_id}")
+                failed_files += 1
+                continue
+            
+            if not Path(file_path).exists():
+                logger.warning(f"[生成规划] 文件不存在 - filename: {filename}, file_path: {file_path}")
+                failed_files += 1
+                continue
+            
+            try:
+                logger.info(f"[生成规划] 开始处理文件切片 - filename: {filename}")
+                chunks = processor.process(file_path)
+                logger.info(f"[生成规划] 文件切片完成 - filename: {filename}, 切片数: {len(chunks) if chunks else 0}")
+                
+                if not chunks:
+                    logger.warning(f"[生成规划] 文件切片为空 - filename: {filename}")
+                    failed_files += 1
+                    continue
+                
+                # 存储 chunks 到数据库
+                logger.info(f"[生成规划] 存储切片到数据库 - filename: {filename}, 切片数: {len(chunks)}")
+                db.store_chunks(file_id, chunks)
+                
+                # 获取存储后的 chunk_id
+                chunk_index_to_id = {}
+                with db._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT chunk_id, chunk_index
+                        FROM chunks
+                        WHERE file_id = ?
+                        ORDER BY chunk_index
+                    """, (file_id,))
+                    for row in cursor.fetchall():
+                        chunk_index_to_id[row["chunk_index"]] = row["chunk_id"]
+                
+                logger.info(f"[生成规划] 获取切片 ID 映射完成 - filename: {filename}, 映射数: {len(chunk_index_to_id)}")
+                
+                # 收集切片信息
+                file_chunks_count = 0
+                for chunk_index, chunk in enumerate(chunks):
+                    chunk_id = chunk_index_to_id.get(chunk_index)
+                    if chunk_id:
+                        metadata = chunk.get("metadata", {})
+                        chapter_name = processor.get_chapter_name(metadata)
+                        content = chunk.get("content", "")
+                        content_summary = content[:500] if len(content) > 500 else content
+                        
+                        all_chunks_info.append({
+                            "chunk_id": chunk_id,
+                            "file_id": file_id,
+                            "chapter_name": chapter_name or "未命名章节",
+                            "content_summary": content_summary
+                        })
+                        file_chunks_count += 1
+                
+                logger.info(f"[生成规划] 文件处理完成 - filename: {filename}, 收集切片数: {file_chunks_count}")
+                processed_files += 1
+                
+            except Exception as e:
+                failed_files += 1
+                error_msg = str(e)
+                error_trace = traceback.format_exc()
+                logger.error(f"[生成规划] 处理文件失败 - filename: {filename}, 错误: {error_msg}")
+                logger.debug(f"[生成规划] 错误堆栈:\n{error_trace}")
+                continue
+        
+        logger.info(f"[生成规划] 文件处理统计 - 成功: {processed_files}, 失败: {failed_files}, 总切片数: {len(all_chunks_info)}")
+        
+        if not all_chunks_info:
+            error_msg = f"没有收集到任何切片信息（处理文件: {processed_files}/{total_files}, 失败: {failed_files}）"
+            logger.error(f"[生成规划] {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        # 4. 调用 AI 进行规划
+        mode = request.mode or "课后习题"
+        logger.info(f"[生成规划] 步骤4: 调用 AI 进行规划 - 切片数: {len(all_chunks_info)}, 模式: {mode}")
+        try:
+            from app.services.ai_service import OpenRouterClient
+            logger.info(f"[生成规划] 导入 OpenRouterClient 成功")
+        except ImportError as e:
+            error_msg = f"导入 OpenRouterClient 失败: {str(e)}"
+            logger.error(f"[生成规划] {error_msg}")
+            logger.error(f"[生成规划] 导入错误堆栈:\n{traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        try:
+            client = OpenRouterClient()
+            logger.info(f"[生成规划] OpenRouterClient 初始化完成")
+            
+            generation_plan = await client.plan_generation_tasks(
+                textbook_name=textbook_name,
+                chunks_info=all_chunks_info,
+                mode=mode
+            )
+            
+            logger.info(f"[生成规划] AI 规划完成 - 总题目数: {generation_plan.total_questions}, 题型分布: {generation_plan.type_distribution}")
+        except Exception as e:
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            logger.error(f"[生成规划] AI 规划失败 - 错误: {error_msg}")
+            logger.debug(f"[生成规划] 错误堆栈:\n{error_trace}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"AI 规划失败: {error_msg}"
+            )
+        
+        # 5. 转换规划结果为字典
+        logger.info(f"[生成规划] 步骤5: 转换规划结果")
+        plan_dict = None
+        try:
+            # 检查 generation_plan 是否有 model_dump 方法（Pydantic v2）或 dict 方法（Pydantic v1）
+            if hasattr(generation_plan, 'model_dump'):
+                plan_dict = generation_plan.model_dump()
+                logger.info(f"[生成规划] 使用 model_dump() 方法转换规划结果")
+            elif hasattr(generation_plan, 'dict'):
+                plan_dict = generation_plan.dict()
+                logger.info(f"[生成规划] 使用 dict() 方法转换规划结果")
+            else:
+                # 如果不是 Pydantic 模型，尝试转换为字典
+                error_msg = f"generation_plan 不是有效的 Pydantic 模型，类型: {type(generation_plan)}"
+                logger.error(f"[生成规划] {error_msg}")
+                raise ValueError(error_msg)
+            
+            logger.info(f"[生成规划] 规划结果转换为字典成功 - 键数量: {len(plan_dict) if plan_dict else 0}")
+            
+            # 验证 plan_dict 是否为字典类型
+            if not isinstance(plan_dict, dict):
+                error_msg = f"plan_dict 不是字典类型，实际类型: {type(plan_dict)}"
+                logger.error(f"[生成规划] {error_msg}")
+                raise ValueError(error_msg)
+        except Exception as e:
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            logger.error(f"[生成规划] 转换规划结果失败 - 错误: {error_msg}")
+            logger.error(f"[生成规划] 错误堆栈:\n{error_trace}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"转换规划结果失败: {error_msg}"
+            )
+        
+        # 6. 返回规划结果
+        logger.info(f"[生成规划] 步骤6: 返回规划结果 - 总题目数: {generation_plan.total_questions}")
+        return JSONResponse(content={
+            "message": "规划完成",
+            "textbook_id": request.textbook_id,
+            "textbook_name": textbook_name,
+            "mode": mode,
+            "total_files": total_files,
+            "generation_plan": plan_dict
+        })
+        
+    except HTTPException:
+        # HTTPException 直接抛出，不记录日志（已经在抛出前记录）
+        raise
+    except Exception as e:
+        # 捕获所有未预期的异常
+        error_msg = str(e)
+        error_trace = traceback.format_exc()
+        logger.error(f"[生成规划] 未预期的错误 - 错误: {error_msg}")
+        logger.error(f"[生成规划] 错误堆栈:\n{error_trace}")
+        
+        # 返回详细的错误信息
+        try:
+            error_detail = repr(e) if hasattr(e, '__repr__') else error_msg
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            error_detail = error_msg
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"规划任务失败: {error_detail}"
+        )
+
+
+class TaskExecuteRequest(BaseModel):
+    """任务执行请求模型"""
+    textbook_id: str = Field(..., description="教材 ID")
+    mode: str = Field(default="课后习题", description="出题模式")
+    generation_plan: Dict[str, Any] = Field(..., description="生成计划")
+    task_settings: Optional[Dict[str, Any]] = Field(default=None, description="任务设置")
+
+
+@router.post("/execute")
+async def execute_task(
+    request: TaskExecuteRequest,
     background_tasks: BackgroundTasks
 ):
     """
-    启动全书自动化出题任务
+    创建任务并执行规划
     
-    当用户选择教材点击生成时：
-    1. 在数据库创建一个 Task 记录
-    2. 使用 FastAPI.BackgroundTasks 启动后台任务
-    3. 立即返回 task_id，前端可以通过 SSE 接口监听进度
+    用户在编辑规划后，提交执行任务：
+    1. 检查教材是否存在
+    2. 创建任务记录
+    3. 保存规划结果到任务
+    4. 启动后台任务执行
     
     Args:
-        request: 教材生成请求，包含 textbook_id
+        request: 任务执行请求，包含 textbook_id、mode、generation_plan、task_settings
         background_tasks: FastAPI 后台任务管理器
         
     Returns:
-        任务信息，包含 task_id
+        任务信息
     """
+    task_id = None
     try:
+        logger.info(f"[执行任务] 开始处理请求 - textbook_id: {request.textbook_id}, mode: {request.mode}")
+        
         # 1. 检查教材是否存在
         textbook = db.get_textbook(request.textbook_id)
         if not textbook:
@@ -521,32 +795,519 @@ async def generate_book(
         
         # 3. 创建任务
         task_id = str(uuid.uuid4())
+        mode = request.mode or "课后习题"
+        logger.info(f"[执行任务] 创建任务 - task_id: {task_id}, mode: {mode}, total_files: {total_files}")
+        
         success = db.create_task(
             task_id=task_id,
             textbook_id=request.textbook_id,
-            total_files=total_files
+            total_files=total_files,
+            mode=mode,
+            task_settings=request.task_settings
         )
         
         if not success:
-            raise HTTPException(status_code=400, detail="创建任务失败")
+            logger.error(f"[执行任务] 创建任务失败 - task_id: {task_id}")
+            raise HTTPException(status_code=400, detail="创建任务失败，可能任务 ID 已存在")
         
-        # 4. 启动后台任务
+        # 4. 保存规划结果到任务
+        logger.info(f"[执行任务] 保存规划结果到任务 - task_id: {task_id}")
+        db.update_task_generation_plan(task_id, request.generation_plan)
+        
+        # 5. 更新任务状态为 PENDING
+        db.update_task_status(task_id, "PENDING")
+        
+        # 6. 启动后台任务
+        logger.info(f"[执行任务] 启动后台任务 - task_id: {task_id}")
         background_tasks.add_task(process_full_textbook_task, task_id)
         
-        # 5. 返回任务信息
-        task = db.get_task(task_id)
+        # 7. 返回任务信息
+        updated_task = db.get_task(task_id)
+        logger.info(f"[执行任务] 任务创建并启动成功 - task_id: {task_id}")
         return JSONResponse(content={
-            "message": "任务已启动",
+            "message": "任务已创建并启动执行",
             "task_id": task_id,
-            "task": task
+            "task": updated_task
         })
         
     except HTTPException:
         raise
     except Exception as e:
+        # 如果任务已创建，更新状态为失败
+        if task_id:
+            try:
+                db.update_task_status(task_id, "FAILED", f"执行任务失败: {str(e)}")
+            except Exception:
+                pass
+        
         try:
-            error_msg = repr(e) if hasattr(e, '__repr__') else "启动任务失败"
+            error_msg = repr(e) if hasattr(e, '__repr__') else "执行任务失败"
         except (UnicodeEncodeError, UnicodeDecodeError):
-            error_msg = "启动任务失败"
-        raise HTTPException(status_code=500, detail=f"启动任务失败: {error_msg}")
+            error_msg = "执行任务失败"
+        raise HTTPException(status_code=500, detail=f"执行任务失败: {error_msg}")
+
+
+@router.post("/create-and-execute")
+async def create_and_execute_task(
+    request: TextbookGenerationRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    创建任务并异步执行（规划在后台任务中进行）
+    
+    当用户点击"开始执行任务"时：
+    1. 检查教材是否存在
+    2. 获取文件数量
+    3. 创建任务记录（状态为 PLANNING）
+    4. 启动后台任务执行（后台任务会先规划，后生成题目）
+    5. 立即返回任务信息
+    
+    Args:
+        request: 教材生成请求，包含 textbook_id、mode、task_settings
+        background_tasks: FastAPI 后台任务管理器
+        
+    Returns:
+        任务信息
+    """
+    task_id = None
+    try:
+        logger.info(f"[创建并执行] 开始处理请求 - textbook_id: {request.textbook_id}, mode: {request.mode}")
+        
+        # 1. 检查教材是否存在
+        logger.info(f"[创建并执行] 步骤1: 检查教材是否存在 - textbook_id: {request.textbook_id}")
+        textbook = db.get_textbook(request.textbook_id)
+        if not textbook:
+            logger.error(f"[创建并执行] 教材不存在 - textbook_id: {request.textbook_id}")
+            raise HTTPException(status_code=404, detail="教材不存在")
+        
+        textbook_name = textbook.get("name", "未命名教材")
+        logger.info(f"[创建并执行] 教材信息获取成功 - 名称: {textbook_name}")
+        
+        # 2. 获取教材下的文件数量
+        logger.info(f"[创建并执行] 步骤2: 获取教材文件列表 - textbook_id: {request.textbook_id}")
+        files = db.get_textbook_files(request.textbook_id)
+        logger.info(f"[创建并执行] 获取到文件列表 - 总数: {len(files)}")
+        
+        md_files = [f for f in files if f.get("file_format", "").lower() in [".md", ".markdown"]]
+        total_files = len(md_files)
+        logger.info(f"[创建并执行] Markdown 文件数量 - 总数: {total_files}")
+        
+        if total_files == 0:
+            logger.error(f"[创建并执行] 教材中没有 Markdown 文件 - textbook_id: {request.textbook_id}")
+            raise HTTPException(status_code=400, detail="教材中没有 Markdown 文件")
+        
+        # 3. 创建任务（状态为 PLANNING，规划将在后台任务中进行）
+        task_id = str(uuid.uuid4())
+        mode = request.mode or "课后习题"
+        logger.info(f"[创建并执行] 创建任务 - task_id: {task_id}, mode: {mode}, total_files: {total_files}")
+        
+        success = db.create_task(
+            task_id=task_id,
+            textbook_id=request.textbook_id,
+            total_files=total_files,
+            mode=mode,
+            task_settings=request.task_settings
+        )
+        
+        if not success:
+            logger.error(f"[创建并执行] 创建任务失败 - task_id: {task_id}")
+            raise HTTPException(status_code=400, detail="创建任务失败，可能任务 ID 已存在")
+        
+        # 4. 更新任务状态为 PLANNING
+        db.update_task_status(task_id, "PLANNING")
+        
+        # 5. 启动后台任务（后台任务会先进行规划，然后生成题目）
+        logger.info(f"[创建并执行] 启动后台任务 - task_id: {task_id}")
+        background_tasks.add_task(process_full_textbook_task, task_id)
+        
+        # 6. 推送初始进度
+        await task_progress_manager.push_progress(
+            task_id=task_id,
+            progress=0.0,
+            message="任务已创建，开始规划...",
+            status="PLANNING"
+        )
+        
+        # 7. 立即返回任务信息
+        created_task = db.get_task(task_id)
+        logger.info(f"[创建并执行] 任务创建并启动成功 - task_id: {task_id}")
+        return JSONResponse(content={
+            "message": "任务已创建并启动执行",
+            "task_id": task_id,
+            "task": created_task
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 如果任务已创建，更新状态为失败
+        if task_id:
+            try:
+                db.update_task_status(task_id, "FAILED", f"创建任务失败: {str(e)}")
+                await task_progress_manager.push_progress(
+                    task_id=task_id,
+                    progress=0.0,
+                    message=f"任务失败: {str(e)}",
+                    status="FAILED"
+                )
+            except Exception:
+                pass
+        
+        try:
+            error_msg = repr(e) if hasattr(e, '__repr__') else "创建任务失败"
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            error_msg = "创建任务失败"
+        raise HTTPException(status_code=500, detail=f"创建任务失败: {error_msg}")
+
+
+@router.post("/generate-and-execute")
+async def generate_and_execute_task(
+    request: TextbookGenerationRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    规划并执行任务（合并规划和执行流程）- 已废弃，保留用于兼容
+    
+    当用户点击"开始执行任务"时：
+    1. 处理所有文件并收集切片信息
+    2. 调用 AI 进行出题规划
+    3. 创建任务记录并保存规划
+    4. 在任务进度中推送规划信息
+    5. 启动后台任务执行
+    
+    Args:
+        request: 教材生成请求，包含 textbook_id、mode、task_settings
+        background_tasks: FastAPI 后台任务管理器
+        
+    Returns:
+        任务信息
+    """
+    task_id = None
+    try:
+        logger.info(f"[规划并执行] 开始处理请求 - textbook_id: {request.textbook_id}, mode: {request.mode}")
+        
+        # 1. 检查教材是否存在
+        logger.info(f"[规划并执行] 步骤1: 检查教材是否存在 - textbook_id: {request.textbook_id}")
+        textbook = db.get_textbook(request.textbook_id)
+        if not textbook:
+            logger.error(f"[规划并执行] 教材不存在 - textbook_id: {request.textbook_id}")
+            raise HTTPException(status_code=404, detail="教材不存在")
+        
+        textbook_name = textbook.get("name", "未命名教材")
+        logger.info(f"[规划并执行] 教材信息获取成功 - 名称: {textbook_name}")
+        
+        # 2. 获取教材下的文件数量
+        logger.info(f"[规划并执行] 步骤2: 获取教材文件列表 - textbook_id: {request.textbook_id}")
+        files = db.get_textbook_files(request.textbook_id)
+        logger.info(f"[规划并执行] 获取到文件列表 - 总数: {len(files)}")
+        
+        md_files = [f for f in files if f.get("file_format", "").lower() in [".md", ".markdown"]]
+        total_files = len(md_files)
+        logger.info(f"[规划并执行] Markdown 文件数量 - 总数: {total_files}")
+        
+        if total_files == 0:
+            logger.error(f"[规划并执行] 教材中没有 Markdown 文件 - textbook_id: {request.textbook_id}")
+            raise HTTPException(status_code=400, detail="教材中没有 Markdown 文件")
+        
+        # 3. 创建任务（在规划之前创建，以便可以推送进度）
+        task_id = str(uuid.uuid4())
+        mode = request.mode or "课后习题"
+        logger.info(f"[规划并执行] 创建任务 - task_id: {task_id}, mode: {mode}, total_files: {total_files}")
+        
+        success = db.create_task(
+            task_id=task_id,
+            textbook_id=request.textbook_id,
+            total_files=total_files,
+            mode=mode,
+            task_settings=request.task_settings
+        )
+        
+        if not success:
+            logger.error(f"[规划并执行] 创建任务失败 - task_id: {task_id}")
+            raise HTTPException(status_code=400, detail="创建任务失败，可能任务 ID 已存在")
+        
+        # 更新任务状态为 PLANNING
+        db.update_task_status(task_id, "PLANNING")
+        await task_progress_manager.push_progress(
+            task_id=task_id,
+            progress=0.0,
+            message="开始规划任务...",
+            status="PLANNING"
+        )
+        
+        # 4. 处理文件并收集切片信息
+        logger.info(f"[规划并执行] 步骤4: 处理文件并收集切片信息")
+        try:
+            from app.services.markdown_service import MarkdownProcessor
+            from pathlib import Path
+            logger.info(f"[规划并执行] 导入模块成功")
+        except ImportError as e:
+            error_msg = f"导入模块失败: {str(e)}"
+            logger.error(f"[规划并执行] {error_msg}")
+            logger.error(f"[规划并执行] 导入错误堆栈:\n{traceback.format_exc()}")
+            db.update_task_status(task_id, "FAILED", error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        try:
+            processor = MarkdownProcessor(
+                chunk_size=1200,
+                chunk_overlap=200,
+                max_tokens_before_split=1500
+            )
+            logger.info(f"[规划并执行] MarkdownProcessor 初始化完成")
+        except Exception as e:
+            error_msg = f"MarkdownProcessor 初始化失败: {str(e)}"
+            logger.error(f"[规划并执行] {error_msg}")
+            logger.error(f"[规划并执行] 初始化错误堆栈:\n{traceback.format_exc()}")
+            db.update_task_status(task_id, "FAILED", error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        all_chunks_info = []
+        processed_files = 0
+        failed_files = 0
+        
+        for idx, file_info in enumerate(md_files, 1):
+            file_id = file_info.get("file_id")
+            filename = file_info.get("filename", file_id)
+            file_path = file_info.get("file_path")
+            
+            logger.info(f"[规划并执行] 处理文件 {idx}/{total_files} - filename: {filename}, file_id: {file_id}")
+            
+            # 推送文件处理进度
+            await task_progress_manager.push_progress(
+                task_id=task_id,
+                progress=0.02 * (idx / total_files),  # 规划阶段占 2% 进度
+                current_file=filename,
+                message=f"正在处理文件: {filename} ({idx}/{total_files})",
+                status="PLANNING"
+            )
+            
+            if not file_path:
+                logger.warning(f"[规划并执行] 文件缺少路径 - filename: {filename}, file_id: {file_id}")
+                failed_files += 1
+                continue
+            
+            if not Path(file_path).exists():
+                logger.warning(f"[规划并执行] 文件不存在 - filename: {filename}, file_path: {file_path}")
+                failed_files += 1
+                continue
+            
+            try:
+                logger.info(f"[规划并执行] 开始处理文件切片 - filename: {filename}")
+                chunks = processor.process(file_path)
+                logger.info(f"[规划并执行] 文件切片完成 - filename: {filename}, 切片数: {len(chunks) if chunks else 0}")
+                
+                if not chunks:
+                    logger.warning(f"[规划并执行] 文件切片为空 - filename: {filename}")
+                    failed_files += 1
+                    continue
+                
+                # 存储 chunks 到数据库
+                logger.info(f"[规划并执行] 存储切片到数据库 - filename: {filename}, 切片数: {len(chunks)}")
+                db.store_chunks(file_id, chunks)
+                
+                # 获取存储后的 chunk_id
+                chunk_index_to_id = {}
+                with db._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT chunk_id, chunk_index
+                        FROM chunks
+                        WHERE file_id = ?
+                        ORDER BY chunk_index
+                    """, (file_id,))
+                    for row in cursor.fetchall():
+                        chunk_index_to_id[row["chunk_index"]] = row["chunk_id"]
+                
+                logger.info(f"[规划并执行] 获取切片 ID 映射完成 - filename: {filename}, 映射数: {len(chunk_index_to_id)}")
+                
+                # 收集切片信息
+                file_chunks_count = 0
+                for chunk_index, chunk in enumerate(chunks):
+                    chunk_id = chunk_index_to_id.get(chunk_index)
+                    if chunk_id:
+                        metadata = chunk.get("metadata", {})
+                        chapter_name = processor.get_chapter_name(metadata)
+                        content = chunk.get("content", "")
+                        content_summary = content[:500] if len(content) > 500 else content
+                        
+                        all_chunks_info.append({
+                            "chunk_id": chunk_id,
+                            "file_id": file_id,
+                            "chapter_name": chapter_name or "未命名章节",
+                            "content_summary": content_summary
+                        })
+                        file_chunks_count += 1
+                
+                logger.info(f"[规划并执行] 文件处理完成 - filename: {filename}, 收集切片数: {file_chunks_count}")
+                processed_files += 1
+                
+            except Exception as e:
+                failed_files += 1
+                error_msg = str(e)
+                error_trace = traceback.format_exc()
+                logger.error(f"[规划并执行] 处理文件失败 - filename: {filename}, 错误: {error_msg}")
+                logger.debug(f"[规划并执行] 错误堆栈:\n{error_trace}")
+                continue
+        
+        logger.info(f"[规划并执行] 文件处理统计 - 成功: {processed_files}, 失败: {failed_files}, 总切片数: {len(all_chunks_info)}")
+        
+        if not all_chunks_info:
+            error_msg = f"没有收集到任何切片信息（处理文件: {processed_files}/{total_files}, 失败: {failed_files}）"
+            logger.error(f"[规划并执行] {error_msg}")
+            db.update_task_status(task_id, "FAILED", error_msg)
+            await task_progress_manager.push_progress(
+                task_id=task_id,
+                progress=0.0,
+                message=f"任务失败: {error_msg}",
+                status="FAILED"
+            )
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        # 5. 调用 AI 进行规划
+        mode = request.mode or "课后习题"
+        logger.info(f"[规划并执行] 步骤5: 调用 AI 进行规划 - 切片数: {len(all_chunks_info)}, 模式: {mode}")
+        
+        await task_progress_manager.push_progress(
+            task_id=task_id,
+            progress=0.05,
+            message=f"正在规划生成任务（共 {len(all_chunks_info)} 个切片）...",
+            status="PLANNING"
+        )
+        
+        try:
+            from app.services.ai_service import OpenRouterClient
+            logger.info(f"[规划并执行] 导入 OpenRouterClient 成功")
+        except ImportError as e:
+            error_msg = f"导入 OpenRouterClient 失败: {str(e)}"
+            logger.error(f"[规划并执行] {error_msg}")
+            logger.error(f"[规划并执行] 导入错误堆栈:\n{traceback.format_exc()}")
+            db.update_task_status(task_id, "FAILED", error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        try:
+            client = OpenRouterClient()
+            logger.info(f"[规划并执行] OpenRouterClient 初始化完成")
+            
+            generation_plan = await client.plan_generation_tasks(
+                textbook_name=textbook_name,
+                chunks_info=all_chunks_info,
+                mode=mode
+            )
+            
+            logger.info(f"[规划并执行] AI 规划完成 - 总题目数: {generation_plan.total_questions}, 题型分布: {generation_plan.type_distribution}")
+        except Exception as e:
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            logger.error(f"[规划并执行] AI 规划失败 - 错误: {error_msg}")
+            logger.debug(f"[规划并执行] 错误堆栈:\n{error_trace}")
+            db.update_task_status(task_id, "FAILED", f"AI 规划失败: {error_msg}")
+            await task_progress_manager.push_progress(
+                task_id=task_id,
+                progress=0.0,
+                message=f"任务失败: AI 规划失败: {error_msg}",
+                status="FAILED"
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"AI 规划失败: {error_msg}"
+            )
+        
+        # 6. 转换规划结果为字典
+        logger.info(f"[规划并执行] 步骤6: 转换规划结果")
+        plan_dict = None
+        try:
+            # 检查 generation_plan 是否有 model_dump 方法（Pydantic v2）或 dict 方法（Pydantic v1）
+            if hasattr(generation_plan, 'model_dump'):
+                plan_dict = generation_plan.model_dump()
+                logger.info(f"[规划并执行] 使用 model_dump() 方法转换规划结果")
+            elif hasattr(generation_plan, 'dict'):
+                plan_dict = generation_plan.dict()
+                logger.info(f"[规划并执行] 使用 dict() 方法转换规划结果")
+            else:
+                error_msg = f"generation_plan 不是有效的 Pydantic 模型，类型: {type(generation_plan)}"
+                logger.error(f"[规划并执行] {error_msg}")
+                raise ValueError(error_msg)
+            
+            logger.info(f"[规划并执行] 规划结果转换为字典成功 - 键数量: {len(plan_dict) if plan_dict else 0}")
+            
+            # 验证 plan_dict 是否为字典类型
+            if not isinstance(plan_dict, dict):
+                error_msg = f"plan_dict 不是字典类型，实际类型: {type(plan_dict)}"
+                logger.error(f"[规划并执行] {error_msg}")
+                raise ValueError(error_msg)
+        except Exception as e:
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            logger.error(f"[规划并执行] 转换规划结果失败 - 错误: {error_msg}")
+            logger.error(f"[规划并执行] 错误堆栈:\n{error_trace}")
+            db.update_task_status(task_id, "FAILED", f"转换规划结果失败: {error_msg}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"转换规划结果失败: {error_msg}"
+            )
+        
+        # 7. 保存规划结果到任务
+        logger.info(f"[规划并执行] 步骤7: 保存规划结果到任务 - task_id: {task_id}")
+        db.update_task_generation_plan(task_id, plan_dict)
+        
+        # 8. 构建规划信息消息，推送到任务日志
+        type_distribution_str = ", ".join([f"{k}: {v}道" for k, v in generation_plan.type_distribution.items()])
+        plan_message = (
+            f"✅ 规划完成！\n"
+            f"📊 规划详情：\n"
+            f"  • 总题目数: {generation_plan.total_questions} 道\n"
+            f"  • 题型分布: {type_distribution_str}\n"
+            f"  • 出题模式: {mode}\n"
+            f"  • 切片数量: {len(all_chunks_info)} 个\n"
+            f"  • 处理文件: {processed_files}/{total_files} 个\n\n"
+            f"🚀 开始执行任务..."
+        )
+        
+        await task_progress_manager.push_progress(
+            task_id=task_id,
+            progress=0.1,
+            message=plan_message,
+            status="PLANNING"
+        )
+        
+        logger.info(f"[规划并执行] 规划信息已推送到任务日志 - task_id: {task_id}")
+        
+        # 9. 更新任务状态为 PENDING，准备执行
+        db.update_task_status(task_id, "PENDING")
+        
+        # 10. 启动后台任务
+        logger.info(f"[规划并执行] 启动后台任务 - task_id: {task_id}")
+        background_tasks.add_task(process_full_textbook_task, task_id)
+        
+        # 11. 返回任务信息
+        updated_task = db.get_task(task_id)
+        logger.info(f"[规划并执行] 任务创建并启动成功 - task_id: {task_id}")
+        return JSONResponse(content={
+            "message": "任务已创建并启动执行",
+            "task_id": task_id,
+            "task": updated_task
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 如果任务已创建，更新状态为失败
+        if task_id:
+            try:
+                db.update_task_status(task_id, "FAILED", f"执行任务失败: {str(e)}")
+                await task_progress_manager.push_progress(
+                    task_id=task_id,
+                    progress=0.0,
+                    message=f"任务失败: {str(e)}",
+                    status="FAILED"
+                )
+            except Exception:
+                pass
+        
+        try:
+            error_msg = repr(e) if hasattr(e, '__repr__') else "执行任务失败"
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            error_msg = "执行任务失败"
+        raise HTTPException(status_code=500, detail=f"执行任务失败: {error_msg}")
 

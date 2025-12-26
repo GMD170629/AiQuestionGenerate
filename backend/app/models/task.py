@@ -2,7 +2,7 @@
 任务相关的数据模型
 """
 
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -22,9 +22,9 @@ class Task(BaseModel):
         description="教材 ID"
     )
     
-    status: Literal["PENDING", "PROCESSING", "PAUSED", "COMPLETED", "FAILED", "CANCELLED"] = Field(
+    status: Literal["PLANNING", "PENDING", "PROCESSING", "PAUSED", "COMPLETED", "FAILED", "CANCELLED"] = Field(
         default="PENDING",
-        description="任务状态：PENDING（等待中）、PROCESSING（执行中）、PAUSED（已暂停）、COMPLETED（已完成）、FAILED（失败）、CANCELLED（已取消）"
+        description="任务状态：PLANNING（规划中）、PENDING（等待中）、PROCESSING（执行中）、PAUSED（已暂停）、COMPLETED（已完成）、FAILED（失败）、CANCELLED（已取消）"
     )
     
     progress: float = Field(
@@ -64,6 +64,21 @@ class Task(BaseModel):
         default=None,
         description="教材名称（从关联表查询，可选）"
     )
+    
+    mode: Optional[str] = Field(
+        default=None,
+        description="出题模式：课后习题 或 提高习题"
+    )
+    
+    task_settings: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="任务设定（JSON对象）"
+    )
+    
+    generation_plan: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="生成计划（JSON对象），包含规划结果"
+    )
 
 
 class TaskCreate(BaseModel):
@@ -88,7 +103,7 @@ class TaskUpdate(BaseModel):
     更新任务请求模型
     """
     
-    status: Optional[Literal["PENDING", "PROCESSING", "PAUSED", "COMPLETED", "FAILED", "CANCELLED"]] = Field(
+    status: Optional[Literal["PLANNING", "PENDING", "PROCESSING", "PAUSED", "COMPLETED", "FAILED", "CANCELLED"]] = Field(
         default=None,
         description="任务状态"
     )

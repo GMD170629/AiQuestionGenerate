@@ -155,3 +155,33 @@ async def clear_all_data():
             error_msg = "清空数据失败"
         raise HTTPException(status_code=500, detail=f"清空数据失败: {error_msg}")
 
+
+@router.post("/restore-prompts")
+async def restore_prompts():
+    """
+    还原系统提示词到默认值（仅在开发模式下可用）
+    
+    从 prompts/default_prompts.py 读取默认提示词并覆盖数据库中的提示词
+    """
+    check_dev_mode()
+    
+    try:
+        from prompts.init_prompts import init_prompts
+        
+        count = init_prompts(force=True)
+        
+        return JSONResponse(content={
+            "message": "提示词已还原到默认值",
+            "count": count,
+            "note": "所有提示词已被覆盖为默认值"
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            error_msg = repr(e) if hasattr(e, '__repr__') else "还原提示词失败"
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            error_msg = "还原提示词失败"
+        raise HTTPException(status_code=500, detail=f"还原提示词失败: {error_msg}")
+

@@ -1052,37 +1052,13 @@ async def _build_dependencies_single_batch(
         for idx, concept in enumerate(concepts_list)
     ])
     
-    # 构建用户提示词（由于需要包含 node_id 等特殊要求，需要自定义构建）
-    # 但可以使用 PromptManager 的基础模板，然后添加特定要求
-    base_user_prompt = PromptManager.build_dependency_analysis_user_prompt(
+    # 使用 PromptManager 构建用户提示词（包含node_id等特殊要求）
+    user_prompt = PromptManager.build_dependency_analysis_user_prompt(
         textbook_name=textbook_name,
-        concepts_list=concepts_text
+        concepts_list=concepts_text,
+        include_extra_requirements=True,  # 包含node_id等系统特定要求
+        total_concepts=total_concepts
     )
-    # 扩展用户提示词，添加 node_id 等特定要求
-    user_prompt = f"""{base_user_prompt}
-
-**额外要求（特定于本系统）**：
-1. **必须返回所有知识点的依赖关系**：返回的 `dependencies` 数组必须包含上述列表中的每一个知识点，不能遗漏任何知识点。
-2. **每个依赖项必须包含 `node_id` 字段**，该字段必须与上述知识点列表中的 `node_id` 完全匹配
-3. 前置依赖必须是上述列表中的知识点（使用 `core_concept` 名称）
-4. 如果某个知识点没有前置依赖，prerequisites 应该为空数组 `[]`
-5. **请确保返回完整的 JSON，不要被截断**
-
-**重要**：请确保返回的 `dependencies` 数组包含所有 {total_concepts} 个知识点，不能遗漏任何知识点。
-
-**JSON 格式要求**：
-```json
-{{
-  "dependencies": [
-    {{
-      "node_id": "节点ID（必须）",
-      "core_concept": "知识点名称（可选，用于验证）",
-      "prerequisites": ["前置知识点1", "前置知识点2", ...]
-    }},
-    ...
-  ]
-}}
-```"""
     
     # 创建 OpenRouter 客户端
     client = OpenRouterClient(api_key=api_key, model=model, api_endpoint=api_endpoint)

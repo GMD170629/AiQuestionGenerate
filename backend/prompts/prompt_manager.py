@@ -1,32 +1,101 @@
 """
 提示词管理器
-负责加载提示词模板并提供变量注入功能
+负责从数据库加载提示词模板并提供参数替换功能
+所有提示词都从数据库读取，不再依赖文件系统
+使用 Template 字符串模板进行参数替换，不使用代码拼接
 """
-
 from typing import Dict, Any, List, Optional
-from .system_prompts import BASE_SYSTEM_PROMPT
-from .question_type_prompts import QUESTION_TYPE_PROMPTS
-from .few_shot_examples import FEW_SHOT_EXAMPLE
-from .knowledge_extraction_prompts import (
-    KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT,
-    build_knowledge_extraction_user_prompt,
-    DEPENDENCY_ANALYSIS_SYSTEM_PROMPT,
-    build_dependency_analysis_user_prompt
-)
+from string import Template
+import json
+
+
+# 题型提示词（硬编码常量，不存储在数据库中）
+QUESTION_TYPE_PROMPTS = {
+    "单选题": """## 单选题生成要求：
+1. **必须提供恰好 4 个选项**
+2. **答案格式**：单个字母（如 "A"）""",
+
+    "多选题": """## 多选题生成要求：
+
+1. **必须提供恰好 4 个选项**
+2. 题干应该明确提示"多选"或"选择所有正确的选项"
+3. 正确答案：多个字母，用逗号分隔（如 "A,B"、"A,B,C" 或 "A,B,C,D"）""",
+
+    "判断题": """## 判断题生成要求：
+
+1. 错误陈述的错误点必须明确，不能是细微的表述差异
+2. 确保"正确"和"错误"两种答案都有合理的分布""",
+
+    "填空题": """## 填空题生成要求：
+
+1.多空题用【1】【2】编号标注
+2. 题干应该提供足够的上下文，确保答案唯一：
+3. **答案格式**：
+   - 单空：直接填写答案（如 "死锁"）
+   - 多空：用 | 分隔（如 "互斥条件|请求和保持条件|不剥夺条件|环路等待条件"）""",
+
+    "简答题": """## 简答题生成要求：
+
+1. 题目应该测试对知识点的综合理解和应用能力
+2. 答案必须分点给出，逻辑清晰""",
+
+    "编程题": """## 编程题生成要求（Online Judge 风格）：
+
+**重要：编程题必须生成为 Online Judge 风格的完整题目，包含完整的题目描述、输入输出格式说明和测试用例。**
+
+**关键提醒：**
+- **answer 字段（必需）**：必须包含完整的解决方案代码，不能为空
+- **explain 字段（必需）**：必须包含详细的解析说明，不能为空
+- **test_cases 字段（必需）**：如果没有提供 test_cases 字段，或 test_cases 中缺少 input_cases 或 output_cases，题目生成将失败
+- **测试用例数量**：至少需要提供1个测试用例（input_cases 和 output_cases 各至少1个）
+- 题目应该是一个完整的、可以提交到 Online Judge 平台的问题"""
+}
+
+# Few-Shot 示例（硬编码常量，不存储在数据库中）
+FEW_SHOT_EXAMPLE = """生成的题目示例：
+
+```json
+[
+  {{
+    "type": "单选题|多选题|判断题|填空题|简答题|编程题",
+    "difficulty": "简单|中等|困难",
+    "stem": "题干（中高难度题目必须包含具体的场景描述、参数、或代码上下文）",
+    "options": ["A", "B", "C", "D"], // 仅选择题需要
+    "answer": "答案内容",
+    "explain": "详细解析（需包含推导逻辑，不仅是复述，字数20-50）",
+    "code_snippet": "代码背景/挖空片段", // 可选
+    "test_cases": {{ // 仅编程题需要，其他题目不要生成
+      "input_description": "输入说明",
+      "output_description": "输出说明",
+      "input_cases": ["用例1", "用例2"],
+      "output_cases": ["结果1", "结果2"]
+    }}
+  }}
+]
+```"""
 
 
 class PromptManager:
-    """提示词管理器类"""
+    """提示词管理器类 - 所有提示词都从数据库读取，使用参数替换"""
     
     @staticmethod
     def get_base_system_prompt() -> str:
         """
-        获取基础系统提示词
+        获取基础系统提示词（已废弃，保留用于兼容性）
         
         Returns:
             基础系统提示词字符串
         """
-        return BASE_SYSTEM_PROMPT
+        # 尝试从数据库读取通用系统提示词
+        try:
+            from app.core.db import db
+            prompt_data = db.get_prompt_by_function("question_generation_homework", "system")
+            if prompt_data:
+                return prompt_data["content"]
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
+        
+        raise ValueError("无法从数据库获取基础系统提示词，请确保已初始化提示词")
     
     @staticmethod
     def get_question_type_prompt(question_type: str) -> Optional[str]:
@@ -62,28 +131,303 @@ class PromptManager:
         return FEW_SHOT_EXAMPLE
     
     @staticmethod
-    def build_system_prompt(include_type_requirements: bool = True) -> str:
+    def build_system_prompt(include_type_requirements: bool = True, mode: Optional[str] = None) -> str:
         """
         构建完整的系统提示词（包含通用规则和题型要求）
         
         Args:
             include_type_requirements: 是否包含题型要求说明
+            mode: 出题模式（"课后习题" 或 "提高习题"），如果为 None 则使用基础提示词
             
         Returns:
             完整的系统提示词字符串
         """
-        system_prompt = BASE_SYSTEM_PROMPT
+        # 从数据库读取
+        try:
+            from app.core.db import db
+            function_type = "question_generation_homework" if mode == "课后习题" else "question_generation_advanced" if mode == "提高习题" else "question_generation_homework"
+            prompt_data = db.get_prompt_by_function(function_type, "system", mode)
+            if prompt_data:
+                content = prompt_data["content"]
+                # 如果需要添加题型要求
+                if include_type_requirements:
+                    type_requirements_parts = []
+                    for q_type in ["单选题", "多选题", "判断题", "填空题", "简答题", "编程题"]:
+                        if q_type in QUESTION_TYPE_PROMPTS:
+                            type_requirements_parts.append(QUESTION_TYPE_PROMPTS[q_type])
+                    type_requirements = "\n\n".join(type_requirements_parts)
+                    if type_requirements:
+                        content += f"\n\n## 题型要求说明：\n以下是各题型的通用生成要求，请严格遵循：\n\n{type_requirements}"
+                return content
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
         
-        if include_type_requirements:
-            # 添加通用题型要求说明
-            system_prompt += "\n\n## 题型要求说明：\n"
-            system_prompt += "以下是各题型的通用生成要求，请严格遵循：\n\n"
-            for q_type in ["单选题", "多选题", "判断题", "填空题", "简答题", "编程题"]:
-                if q_type in QUESTION_TYPE_PROMPTS:
-                    system_prompt += QUESTION_TYPE_PROMPTS[q_type]
-                    system_prompt += "\n\n"
+        raise ValueError(f"无法从数据库获取系统提示词（模式: {mode}），请确保已初始化提示词")
+    
+    @staticmethod
+    def build_question_generation_user_prompt(
+        question_count: int,
+        question_types: List[str],
+        chapter_name: Optional[str] = None,
+        core_concept: Optional[str] = None,
+        bloom_level: Optional[int] = None,
+        knowledge_summary: Optional[str] = None,
+        prerequisites_context: Optional[List[Dict[str, Any]]] = None,
+        confusion_points: Optional[List[str]] = None,
+        application_scenarios: Optional[List[str]] = None,
+        reference_content: Optional[str] = None,
+        allowed_difficulties: Optional[List[str]] = None,
+        strict_plan_mode: bool = False,
+        textbook_name: Optional[str] = None,
+        mode: Optional[str] = None
+    ) -> str:
+        """
+        构建题目生成的用户提示词（从数据库读取模板并使用参数替换）
         
-        return system_prompt
+        Args:
+            question_count: 题目数量
+            question_types: 题型列表（必须指定）
+            chapter_name: 章节名称
+            core_concept: 核心概念
+            bloom_level: Bloom 认知层级
+            knowledge_summary: 知识点摘要
+            prerequisites_context: 前置知识点上下文列表
+            confusion_points: 易错点列表
+            application_scenarios: 应用场景列表
+            reference_content: 参考文本内容
+            allowed_difficulties: 允许的难度列表，如 ["中等", "困难"]
+            strict_plan_mode: 是否启用严格计划模式
+            textbook_name: 教材名称
+            mode: 出题模式（"课后习题" 或 "提高习题"）
+            
+        Returns:
+            完整的用户提示词字符串
+        """
+        # 验证题型列表不能为空
+        if not question_types or len(question_types) == 0:
+            raise ValueError("question_types 不能为空，必须指定要生成的题型")
+        
+        # 验证全书生成任务时教材名称必传
+        if mode is not None and (not textbook_name or textbook_name.strip() == ""):
+            raise ValueError("全书生成任务时，textbook_name（教材名称）为必传参数，不能为空")
+        
+        try:
+            from app.core.db import db
+            # 根据模式选择 function_type
+            function_type = "question_generation_advanced" if mode == "提高习题" else "question_generation_homework"
+            prompt_data = db.get_prompt_by_function(function_type, "user", mode)
+            if not prompt_data:
+                raise ValueError(f"无法从数据库获取用户提示词模板（模式: {mode}）")
+            
+            # 准备参数
+            # Bloom层级名称映射
+            bloom_names = {
+                1: "记忆（Remember）",
+                2: "理解（Understand）",
+                3: "应用（Apply）",
+                4: "分析（Analyze）",
+                5: "评价（Evaluate）",
+                6: "创造（Create）"
+            }
+            bloom_level_name = bloom_names.get(bloom_level, "未知") if bloom_level else "未知"
+            
+            # 格式化前置知识点上下文
+            prerequisites_text = ""
+            prereq_names_str = ""
+            prerequisite_knowledge = ""  # 用于模板中的 ${prerequisite_knowledge}
+            if prerequisites_context:
+                prereq_parts = []
+                for idx, prereq in enumerate(prerequisites_context, 1):
+                    prereq_concept = prereq.get("concept", "")
+                    prereq_summary = prereq.get("summary", "")
+                    prereq_depth = prereq.get("depth", 0)
+                    prereq_parts.append(f"{idx}. **{prereq_concept}**（直接依赖，深度 {prereq_depth}）\n   {prereq_summary}")
+                
+                if prereq_parts:
+                    prerequisites_text = "\n\n".join(prereq_parts)
+                    prereq_names = [p.get("concept", "") for p in prerequisites_context[:2]]
+                    prereq_names_str = ", ".join(prereq_names) if prereq_names else "前置知识"
+                    # 为模板中的 ${prerequisite_knowledge} 提供格式化后的文本
+                    prerequisite_knowledge = prerequisites_text
+            
+            # 格式化易错点
+            confusion_points_text = ""
+            if confusion_points:
+                confusion_parts = [f"{idx}. {point}" for idx, point in enumerate(confusion_points[:5], 1)]
+                confusion_points_text = "\n".join(confusion_parts)
+            
+            # 格式化应用场景
+            application_scenarios_text = ""
+            if application_scenarios:
+                scenario_parts = [f"{idx}. {scenario}" for idx, scenario in enumerate(application_scenarios[:3], 1)]
+                application_scenarios_text = "\n".join(scenario_parts)
+            
+            # 格式化参考内容（增加到1500字符，确保包含更多教材原文内容）
+            reference_content_preview = ""
+            if reference_content:
+                reference_content_preview = reference_content[:1500]
+            
+            # 格式化难度限制
+            difficulty_text = ""
+            difficulty_requirements = ""
+            if allowed_difficulties and "简单" not in allowed_difficulties:
+                difficulty_text = "或".join(allowed_difficulties)
+                req_parts = [f"- 请只生成难度为 {difficulty_text} 的题目，禁止生成简单题目。"]
+                if "中等" in allowed_difficulties:
+                    req_parts.append("- 中等题目：必须构造具体的小型场景、给出特定参数或代码片段，要求学生进行逻辑推演或结果计算，禁止直接询问定义。")
+                if "困难" in allowed_difficulties:
+                    req_parts.append("- 困难题目：必须构建复杂工程场景或逻辑谜题，要求学生在多重约束条件下进行建模、性能优化、或解决多个知识点交叉的综合问题。")
+                difficulty_requirements = "\n".join(req_parts)
+            
+            # 格式化题型分布
+            type_count = question_count // len(question_types)
+            remainder = question_count % len(question_types)
+            type_distribution = {}
+            for idx, q_type in enumerate(question_types):
+                count = type_count + (1 if idx < remainder else 0)
+                type_distribution[q_type] = count
+            
+            distribution_text = "、".join([f"{count}道{qt}" for qt, count in type_distribution.items()])
+            
+            # 格式化题型列表
+            question_types_text = "、".join(question_types)
+            
+            # 使用 Template 进行参数替换
+            template = Template(prompt_data["content"])
+            return template.safe_substitute(
+                question_count=question_count,
+                question_types=question_types_text,
+                chapter_name=chapter_name or "",
+                core_concept=core_concept or "",
+                bloom_level=bloom_level or 0,
+                bloom_level_name=bloom_level_name,
+                knowledge_summary=knowledge_summary or "",
+                prerequisites_text=prerequisites_text,
+                prereq_names_str=prereq_names_str,
+                prerequisite_knowledge=prerequisite_knowledge,  # 添加 prerequisite_knowledge 参数
+                confusion_points_text=confusion_points_text,
+                application_scenarios_text=application_scenarios_text,
+                reference_content=reference_content_preview,
+                difficulty_text=difficulty_text,
+                difficulty_requirements=difficulty_requirements,
+                distribution_text=distribution_text,
+                strict_plan_mode="是" if strict_plan_mode else "否",
+                textbook_name=textbook_name or "",  # 全书生成任务时必传
+                total_count=question_count
+            )
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
+            raise ValueError(f"无法从数据库获取题目生成用户提示词，请确保已初始化提示词: {e}")
+    
+    @staticmethod
+    def get_knowledge_extraction_system_prompt() -> str:
+        """获取知识点提取的系统提示词"""
+        try:
+            from app.core.db import db
+            prompt_data = db.get_prompt_by_function("knowledge_extraction", "system")
+            if prompt_data:
+                return prompt_data["content"]
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
+        
+        raise ValueError("无法从数据库获取知识点提取系统提示词，请确保已初始化提示词")
+    
+    @staticmethod
+    def build_knowledge_extraction_user_prompt(
+        context_str: str = "",
+        existing_concepts_str: str = "",
+        chunk_content: str = ""
+    ) -> str:
+        """构建知识点提取的用户提示词（从数据库读取模板并使用参数替换）"""
+        try:
+            from app.core.db import db
+            prompt_data = db.get_prompt_by_function("knowledge_extraction", "user")
+            if prompt_data:
+                template = Template(prompt_data["content"])
+                # 进行参数替换
+                return template.safe_substitute(
+                    context_str=context_str or "",
+                    existing_concepts_str=existing_concepts_str or "",
+                    chunk_content=chunk_content or ""
+                )
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
+        
+        raise ValueError("无法从数据库获取知识点提取用户提示词，请确保已初始化提示词")
+    
+    @staticmethod
+    def get_dependency_analysis_system_prompt() -> str:
+        """获取依赖关系分析的系统提示词"""
+        try:
+            from app.core.db import db
+            # 依赖分析可能使用不同的 function_type，如果没有则尝试通用类型
+            prompt_data = db.get_prompt_by_function("dependency_analysis", "system")
+            if not prompt_data:
+                # 回退到 knowledge_extraction
+                prompt_data = db.get_prompt_by_function("knowledge_extraction", "system")
+            if prompt_data:
+                return prompt_data["content"]
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
+        
+        raise ValueError("无法从数据库获取依赖关系分析系统提示词，请确保已初始化提示词")
+    
+    @staticmethod
+    def build_dependency_analysis_user_prompt(
+        textbook_name: str,
+        concepts_list: str,
+        include_extra_requirements: bool = False,
+        total_concepts: Optional[int] = None
+    ) -> str:
+        """构建依赖关系分析的用户提示词（从数据库读取模板并使用参数替换）"""
+        try:
+            from app.core.db import db
+            # 依赖分析可能使用不同的 function_type
+            prompt_data = db.get_prompt_by_function("dependency_analysis", "user")
+            if not prompt_data:
+                raise ValueError("无法从数据库获取依赖关系分析用户提示词模板")
+            
+            # 格式化额外要求
+            extra_requirements = ""
+            if include_extra_requirements:
+                if total_concepts is None:
+                    total_concepts = len([line for line in concepts_list.split('\n') if line.strip()])
+                extra_requirements = f"""
+**额外要求（特定于本系统）**：
+1. **必须返回所有知识点的依赖关系**：返回的 `dependencies` 数组必须包含上述列表中的每一个知识点，不能遗漏任何知识点。
+2. **每个依赖项必须包含 `node_id` 字段**，该字段必须与上述知识点列表中的 `node_id` 完全匹配
+3. 前置依赖必须是上述列表中的知识点（使用 `core_concept` 名称）
+4. 如果某个知识点没有前置依赖，prerequisites 应该为空数组 `[]`
+5. **请确保返回完整的 JSON，不要被截断**
+
+**重要**：请确保返回的 `dependencies` 数组包含所有 {total_concepts or 0} 个知识点，不能遗漏任何知识点。
+
+**JSON 格式要求**：
+```json
+{{
+  "dependencies": [
+    {{
+      "node_id": "节点ID（必须）",
+      "core_concept": "知识点名称（可选，用于验证）",
+      "prerequisites": ["前置知识点1", "前置知识点2", ...]
+    }},
+    ...
+  ]
+}}
+```"""
+            
+            # 使用 Template 进行参数替换
+            template = Template(prompt_data["content"])
+            return template.safe_substitute(
+                textbook_name=textbook_name or "",
+                concepts_list=concepts_list or "",
+                extra_requirements=extra_requirements if include_extra_requirements else ""
+            )
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
+            raise ValueError(f"无法从数据库获取依赖关系分析用户提示词，请确保已初始化提示词: {e}")
+    
+    # 以下方法已废弃，保留用于兼容性
     
     @staticmethod
     def build_knowledge_based_prompt(
@@ -95,307 +439,40 @@ class PromptManager:
         application_scenarios: Optional[List[str]] = None,
         reference_content: Optional[str] = None
     ) -> str:
-        """
-        基于知识点信息构建题目生成提示词
-        
-        Args:
-            core_concept: 核心概念
-            bloom_level: Bloom 认知层级
-            knowledge_summary: 知识点摘要
-            prerequisites_context: 前置知识点上下文列表
-            confusion_points: 易错点列表
-            application_scenarios: 应用场景列表
-            reference_content: 参考文本内容（可选）
-            
-        Returns:
-            构建好的提示词字符串
-        """
-        prompt_parts = []
-        
-        # 核心概念
-        if core_concept:
-            prompt_parts.append(f"## 目标知识点：{core_concept}\n")
-        
-        # Bloom 认知层级
-        if bloom_level:
-            bloom_names = {
-                1: "记忆（Remember）",
-                2: "理解（Understand）",
-                3: "应用（Apply）",
-                4: "分析（Analyze）",
-                5: "评价（Evaluate）",
-                6: "创造（Create）"
-            }
-            prompt_parts.append(f"**认知层级**：Level {bloom_level} - {bloom_names.get(bloom_level, '未知')}\n")
-        
-        # 知识点摘要
-        if knowledge_summary:
-            prompt_parts.append(f"**知识点摘要**：{knowledge_summary}\n")
-        
-        # 前置依赖知识点
-        if prerequisites_context:
-            prompt_parts.append("\n## 前置知识点上下文：\n")
-            prompt_parts.append("以下是与当前知识点相关的前置依赖知识点，请在设计题目时结合这些前置知识：\n\n")
-            for idx, prereq in enumerate(prerequisites_context, 1):
-                prereq_concept = prereq.get("concept", "")
-                prereq_summary = prereq.get("summary", "")
-                prereq_depth = prereq.get("depth", 0)
-                prompt_parts.append(f"{idx}. **{prereq_concept}**（深度 {prereq_depth}）\n")
-                prompt_parts.append(f"   {prereq_summary}\n\n")
-        
-        # 易错点
-        if confusion_points:
-            prompt_parts.append(f"\n## 学生易错点：\n")
-            for idx, point in enumerate(confusion_points[:5], 1):  # 最多显示5个
-                prompt_parts.append(f"{idx}. {point}\n")
-        
-        # 应用场景
-        if application_scenarios:
-            prompt_parts.append(f"\n## 应用场景：\n")
-            for idx, scenario in enumerate(application_scenarios[:3], 1):  # 最多显示3个
-                prompt_parts.append(f"{idx}. {scenario}\n")
-        
-        # 原始文本参考（可选，仅作为背景信息）
-        if reference_content:
-            prompt_parts.append("\n## 参考文本（仅作为背景信息，题目应基于知识点而非文本）：\n")
-            # 只显示前500字符作为参考
-            content_preview = reference_content[:500]
-            if content_preview:
-                prompt_parts.append(f"```markdown\n{content_preview}...\n```\n")
-                prompt_parts.append("\n**注意**：以上文本仅供参考，题目应基于知识点信息生成，而不是直接基于文本内容。\n")
-        
-        return "\n".join(prompt_parts)
+        """已废弃，请使用 build_question_generation_user_prompt"""
+        raise NotImplementedError("此方法已废弃，请使用 build_question_generation_user_prompt")
     
     @staticmethod
     def build_task_specific_prompt(
         question_types: List[str],
         question_count: int,
         context: Optional[str] = None,
-        adaptive: bool = False,
         bloom_level: Optional[int] = None,
         core_concept: Optional[str] = None,
         allowed_difficulties: Optional[List[str]] = None,
         strict_plan_mode: bool = False
     ) -> str:
-        """
-        构建具体任务要求的提示词（用于用户提示词）
-        
-        Args:
-            question_types: 题型列表（如果为空且 adaptive=True，则让 AI 自主决定）
-            question_count: 每种题型的数量（如果 adaptive=True，则作为建议数量）
-            context: 教材内容上下文（用于检测是否包含代码）
-            adaptive: 是否启用自适应模式（让 AI 自主决定数量和题型）
-            bloom_level: Bloom 认知层级
-            core_concept: 核心概念
-            allowed_difficulties: 允许的难度列表，如 ["中等", "困难"]，None 表示不限制
-            
-        Returns:
-            具体任务要求的提示词字符串（不包含通用规则）
-        """
-        prompt_parts = []
-        
-        # 根据 Bloom 层级调整题型要求
-        bloom_type_requirements = []
-        if bloom_level and bloom_level >= 4:
-            # Level 4 以上（应用/分析/评价/创造），强制要求复杂题型
-            bloom_type_requirements.append("**重要**：检测到当前知识点属于 Bloom 认知层级 Level 4 以上（应用/分析/评价/创造），请务必包含以下题型：")
-            bloom_type_requirements.append("- 简答题：要求分析、比较或评价")
-            bloom_type_requirements.append("- 编程题：要求实现复杂算法或解决实际问题")
-            bloom_type_requirements.append("避免生成过于简单的记忆性题目。")
-        
-        # 添加难度限制要求
-        difficulty_requirements = []
-        if allowed_difficulties:
-            if "简单" not in allowed_difficulties:
-                difficulty_requirements.append("**重要：难度限制**")
-                difficulty_text = "或".join(allowed_difficulties)
-                difficulty_requirements.append(f"- 请只生成难度为 {difficulty_text} 的题目，禁止生成简单题目。")
-                if "中等" in allowed_difficulties:
-                    difficulty_requirements.append("- 中等题目：必须构造具体的小型场景、给出特定参数或代码片段，要求学生进行逻辑推演或结果计算，禁止直接询问定义。")
-                if "困难" in allowed_difficulties:
-                    difficulty_requirements.append("- 困难题目：必须构建复杂工程场景或逻辑谜题，要求学生在多重约束条件下进行建模、性能优化、或解决多个知识点交叉的综合问题。")
-        
-        # 自适应模式：让 AI 自主决定
-        if adaptive or not question_types:
-            prompt_parts.append("## 本次任务要求：\n")
-            # prompt_parts.append("请根据提供的知识点信息和文本内容，自主决定出题的数量（1-2题）和最合适的题型组合。\n")
-            
-            # 添加难度限制要求
-            if difficulty_requirements:
-                prompt_parts.append("\n".join(difficulty_requirements))
-                prompt_parts.append("\n")
-            
-            # 添加 Bloom 层级要求
-            if bloom_type_requirements:
-                prompt_parts.append("\n".join(bloom_type_requirements))
-                prompt_parts.append("\n")
-            
-            # 检测是否包含代码
-            if context and PromptManager._detect_code_in_text(context):
-                prompt_parts.append("**重要**：检测到文本包含代码、算法或编程相关内容，请务必包含编程题或填空题。\n")
-            
-            # prompt_parts.append("\n**题型选择建议**：")
-            # prompt_parts.append("- 如果文本包含代码、算法或编程相关内容，请务必包含编程题或填空题")
-            # prompt_parts.append("- 概念性内容适合使用单选题、多选题、判断题")
-            # prompt_parts.append("- 需要详细解释的内容适合使用简答题")
-            # prompt_parts.append("- 根据内容特点灵活组合题型，确保题型与内容匹配")
-            prompt_parts.append("\n**数量建议**：")
-            prompt_parts.append(f"- 建议生成 {question_count} 道题左右，但请根据内容质量自主调整（1-2题）")
-            prompt_parts.append("- 不要为了凑数而生成低质量题目，质量优先于数量")
-            
-            return "\n".join(prompt_parts)
-        
-        # 非自适应模式：使用指定的题型和数量
-        prompt_parts.append("## 本次任务要求：\n")
-        
-        # 添加难度限制要求
-        if difficulty_requirements:
-            prompt_parts.append("\n".join(difficulty_requirements))
-            prompt_parts.append("\n")
-        
-        # 添加 Bloom 层级要求
-        if bloom_type_requirements:
-            prompt_parts.append("\n".join(bloom_type_requirements))
-            prompt_parts.append("\n")
-        
-        # 严格计划模式：强调严格按照要求的题型和数量生成
-        if strict_plan_mode:
-            prompt_parts.append("**⚠️ 重要：严格计划模式**\n")
-            prompt_parts.append("请严格按照以下要求的【题型】和【数量】生成题目，不要多选或漏选：\n\n")
-        
-        if len(question_types) == 1:
-            if strict_plan_mode:
-                prompt_parts.append(f"**必须生成 {question_count} 道{question_types[0]}，不能多也不能少。**")
-            else:
-                prompt_parts.append(f"请生成 {question_count} 道{question_types[0]}。")
-        else:
-            # 说明题型分布
-            # 在严格计划模式下，需要明确每种题型的数量分配
-            if strict_plan_mode:
-                # 将总数量平均分配给各题型（向下取整），剩余数量分配给前几个题型
-                total_count = question_count
-                type_count = total_count // len(question_types)
-                remainder = total_count % len(question_types)
-                
-                type_distribution = {}
-                for idx, q_type in enumerate(question_types):
-                    # 前 remainder 个题型多分配1道
-                    count = type_count + (1 if idx < remainder else 0)
-                    type_distribution[q_type] = count
-                
-                distribution_text = "、".join([f"{count}道{qt}" for qt, count in type_distribution.items()])
-                prompt_parts.append(f"**必须严格按照以下题型和数量生成，总共 {total_count} 道题：**\n")
-                prompt_parts.append(f"- {distribution_text}\n")
-                prompt_parts.append(f"\n**重要**：")
-                prompt_parts.append(f"- 必须生成所有指定的题型，不能遗漏任何题型")
-                prompt_parts.append(f"- 每种题型的数量必须严格按照要求，不能多也不能少")
-                prompt_parts.append(f"- 总题目数量必须正好是 {total_count} 道，不能多也不能少")
-            else:
-                # 非严格模式：简单说明题型分布
-                type_distribution = {}
-                for q_type in question_types:
-                    type_distribution[q_type] = type_distribution.get(q_type, 0) + question_count
-                
-                distribution_text = "、".join([f"{count}道{qt}" for qt, count in type_distribution.items()])
-                prompt_parts.append(f"请生成 {distribution_text}。")
-        
-        return "\n".join(prompt_parts)
-    
-    @staticmethod
-    def _detect_code_in_text(text: str) -> bool:
-        """
-        检测文本中是否包含代码
-        
-        Args:
-            text: 要检测的文本
-            
-        Returns:
-            如果包含代码返回 True，否则返回 False
-        """
-        # 检测代码块的常见标记
-        code_indicators = [
-            '```',  # Markdown 代码块
-            'def ',  # Python 函数定义
-            'class ',  # 类定义
-            'function ',  # JavaScript 函数
-            'import ',  # 导入语句
-            'return ',  # 返回语句
-            'if ',  # 条件语句
-            'for ',  # 循环语句
-            'while ',  # while 循环
-        ]
-        
-        # 检查是否包含代码块标记
-        if '```' in text:
-            return True
-        
-        # 检查是否包含多个代码特征（避免误判）
-        code_count = sum(1 for indicator in code_indicators[1:] if indicator in text)
-        return code_count >= 3  # 如果包含3个或以上代码特征，认为包含代码
+        """已废弃，请使用 build_question_generation_user_prompt"""
+        raise NotImplementedError("此方法已废弃，请使用 build_question_generation_user_prompt")
     
     @staticmethod
     def build_prerequisites_prompt(
         prerequisites_context: List[Dict[str, Any]],
         core_concept: Optional[str] = None
     ) -> str:
-        """
-        构建前置知识点上下文提示
-        
-        Args:
-            prerequisites_context: 前置知识点上下文列表
-            core_concept: 核心概念
-            
-        Returns:
-            前置知识点提示词字符串
-        """
-        if not prerequisites_context:
-            return ""
-        
-        prompt = "\n## 前置知识点上下文：\n"
-        prompt += "以下是与当前知识点相关的前置依赖知识点，请在设计题目时结合这些前置知识，帮助学生建立知识之间的关联：\n\n"
-        
-        for idx, prereq in enumerate(prerequisites_context, 1):
-            prereq_concept = prereq.get("concept", "")
-            prereq_summary = prereq.get("summary", "")
-            prereq_depth = prereq.get("depth", 0)
-            prompt += f"{idx}. **{prereq_concept}**（直接依赖，深度 {prereq_depth}）\n"
-            prompt += f"   {prereq_summary}\n\n"
-        
-        prompt += "**重要**：在题目的解析（explain 字段）中，必须包含以下说明：\n"
-        prereq_names = [p.get("concept", "") for p in prerequisites_context[:2]]
-        prompt += f'"此题旨在通过[{", ".join(prereq_names)}]来深化对[{core_concept or "当前概念"}]的理解。"\n\n'
-        
-        return prompt
+        """已废弃，请使用 build_question_generation_user_prompt"""
+        raise NotImplementedError("此方法已废弃，请使用 build_question_generation_user_prompt")
     
     @staticmethod
     def build_coherence_prompt(
         prerequisites_context: List[Dict[str, Any]],
         core_concept: Optional[str] = None
     ) -> str:
-        """
-        构建连贯性要求提示
-        
-        Args:
-            prerequisites_context: 前置知识点上下文列表
-            core_concept: 核心概念
-            
-        Returns:
-            连贯性要求提示词字符串
-        """
-        if not prerequisites_context or not core_concept:
-            return ""
-        
-        prereq_names = [p.get("concept", "") for p in prerequisites_context[:2]]
-        prompt = f"\n## 连贯性要求：\n"
-        prompt += "**重要**：在每道题的解析（explain 字段）中，必须包含以下说明：\n"
-        prompt += f'\"此题旨在通过[{", ".join(prereq_names)}]来深化对[{core_concept}]的理解。\"\n'
-        prompt += "请确保题目能够体现知识点之间的关联，帮助学生建立完整的知识体系。\n\n"
-        
-        return prompt
+        """已废弃，请使用 build_question_generation_user_prompt"""
+        raise NotImplementedError("此方法已废弃，请使用 build_question_generation_user_prompt")
     
     @staticmethod
     def build_user_prompt_base(
-        adaptive: bool,
         question_count: Optional[int] = None,
         chapter_name: Optional[str] = None,
         core_concept: Optional[str] = None,
@@ -405,87 +482,72 @@ class PromptManager:
         task_prompt: str = "",
         context: Optional[str] = None
     ) -> str:
+        """已废弃，请使用 build_question_generation_user_prompt"""
+        raise NotImplementedError("此方法已废弃，请使用 build_question_generation_user_prompt")
+    
+    @staticmethod
+    def get_textbook_info_prompt(
+        textbook_name: Optional[str] = None,
+        chapter_name: Optional[str] = None
+    ) -> str:
+        """已废弃，请使用 build_question_generation_user_prompt"""
+        raise NotImplementedError("此方法已废弃，请使用 build_question_generation_user_prompt")
+    
+    @staticmethod
+    def get_task_planning_system_prompt() -> str:
         """
-        构建用户提示词基础部分
+        获取任务规划的系统提示词
+        
+        Returns:
+            任务规划系统提示词字符串
+        """
+        try:
+            from app.core.db import db
+            prompt_data = db.get_prompt_by_function("task_planning", "system")
+            if prompt_data:
+                return prompt_data["content"]
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
+        
+        raise ValueError("无法从数据库获取任务规划系统提示词，请确保已初始化提示词")
+    
+    @staticmethod
+    def build_task_planning_user_prompt(
+        textbook_name: str,
+        chunks_text: str,
+        chunk_count: int
+    ) -> str:
+        """
+        构建任务规划的用户提示词（从数据库读取模板并使用参数替换）
         
         Args:
-            adaptive: 是否自适应模式
-            question_count: 题目数量
-            chapter_name: 章节名称
-            core_concept: 核心概念
-            knowledge_prompt: 知识点提示词
-            prerequisites_prompt: 前置知识点提示词
-            coherence_prompt: 连贯性提示词
-            task_prompt: 任务提示词
-            context: 教材内容上下文
-            
+            textbook_name: 教材名称
+            chunks_text: 切片目录文本（格式化后的切片信息）
+            chunk_count: 切片总数
+        
         Returns:
-            用户提示词字符串
+            完整的用户提示词字符串
         """
-        if adaptive:
-            user_prompt = f"""
-
-"""
-        else:
-            user_prompt = f"""请根据以下知识点信息和教材内容，生成 {question_count or 5} 道高质量的计算机科学习题。
-
-"""
+        # 验证必传参数
+        if not textbook_name or textbook_name.strip() == "":
+            raise ValueError("textbook_name（教材名称）为必传参数，不能为空")
         
-        if chapter_name:
-            user_prompt += f"**章节：{chapter_name}**\n\n"
+        if not chunks_text or chunks_text.strip() == "":
+            raise ValueError("chunks_text（切片目录文本）为必传参数，不能为空")
         
-        if core_concept:
-            user_prompt += f"**核心概念：{core_concept}**\n\n"
-        
-        if context:
-            user_prompt += f"""**教材内容：**
-```markdown
-{context}
-```
-
-"""
-        
-        user_prompt += f"""{knowledge_prompt}
-
-{prerequisites_prompt}
-
-{task_prompt}
-
-请严格按照 JSON 数组格式返回，不要添加任何额外的文本、说明或代码块标记。直接返回 JSON 数组即可。"""
-        
-        return user_prompt
-    
-    # 知识点提取相关方法
-    @staticmethod
-    def get_knowledge_extraction_system_prompt() -> str:
-        """获取知识点提取的系统提示词"""
-        return KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT
-    
-    @staticmethod
-    def build_knowledge_extraction_user_prompt(
-        context_str: str = "",
-        existing_concepts_str: str = "",
-        chunk_content: str = ""
-    ) -> str:
-        """构建知识点提取的用户提示词"""
-        return build_knowledge_extraction_user_prompt(
-            context_str=context_str,
-            existing_concepts_str=existing_concepts_str,
-            chunk_content=chunk_content
-        )
-    
-    @staticmethod
-    def get_dependency_analysis_system_prompt() -> str:
-        """获取依赖关系分析的系统提示词"""
-        return DEPENDENCY_ANALYSIS_SYSTEM_PROMPT
-    
-    @staticmethod
-    def build_dependency_analysis_user_prompt(
-        textbook_name: str,
-        concepts_list: str
-    ) -> str:
-        """构建依赖关系分析的用户提示词"""
-        return build_dependency_analysis_user_prompt(
-            textbook_name=textbook_name,
-            concepts_list=concepts_list
-        )
+        try:
+            from app.core.db import db
+            prompt_data = db.get_prompt_by_function("task_planning", "user")
+            if not prompt_data:
+                raise ValueError("无法从数据库获取任务规划用户提示词模板")
+            
+            # 使用 Template 进行参数替换
+            template = Template(prompt_data["content"])
+            return template.safe_substitute(
+                textbook_name=textbook_name,
+                chunks_text=chunks_text,
+                chunk_count=chunk_count
+            )
+        except Exception as e:
+            print(f"从数据库读取提示词失败: {e}")
+            raise ValueError(f"无法从数据库获取任务规划用户提示词，请确保已初始化提示词: {e}")

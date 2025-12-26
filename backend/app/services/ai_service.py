@@ -15,6 +15,7 @@ from app.services.markdown_service import MarkdownProcessor
 from app.core.db import db
 from app.services.knowledge_graph_service import knowledge_graph
 from prompts import PromptManager
+from prompts import PromptManager
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -467,13 +468,7 @@ def extract_knowledge_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any
 def build_knowledge_based_prompt(knowledge_info: Dict[str, Any], 
                                  chunks: Optional[List[Dict[str, Any]]] = None) -> str:
     """
-    基于知识点信息构建题目生成提示词（升级版：包含层级背景和横向依赖）
-    
-    这是新的出题流程的核心：基于知识点而不是原始文本生成题目
-    升级特性：
-    1. 包含层级背景（一级主题、二级章节、三级原子点）
-    2. 包含横向依赖关系（用于生成干扰项或前置条件）
-    3. 智能上下文检索
+    基于知识点信息构建题目生成提示词
     
     Args:
         knowledge_info: 知识点信息字典（来自 extract_knowledge_from_chunks）
@@ -487,54 +482,19 @@ def build_knowledge_based_prompt(knowledge_info: Dict[str, Any],
     bloom_level = knowledge_info.get("bloom_level")
     knowledge_summary = knowledge_info.get("knowledge_summary", "")
     prerequisites_context = knowledge_info.get("prerequisites_context", [])
-    dependency_edges = knowledge_info.get("dependency_edges", [])
-    hierarchy_context = knowledge_info.get("hierarchy_context", {})
     confusion_points = knowledge_info.get("confusion_points", [])
     application_scenarios = knowledge_info.get("application_scenarios", [])
     
-    # 提取参考内容
+    # 提取参考内容（仅显示前500字符）
     reference_content = None
     if chunks and len(chunks) > 0:
         reference_content = chunks[0].get("content", "")[:500]
     
-    # 构建知识点背景信息
-    hierarchy_info = ""
-    if hierarchy_context:
-        hierarchy_path = hierarchy_context.get("hierarchy_path", "")
-        core_concept = hierarchy_context.get("core_concept", "")
-        
-        if hierarchy_path or core_concept:
-            concept_name = hierarchy_path or core_concept
-            hierarchy_info = f"""
-## 知识点信息：
-**核心概念**：{concept_name}
-"""
-    
-    # 构建横向依赖信息（用于生成干扰项或前置条件）
-    dependency_info = ""
-    if dependency_edges:
-        dep_concepts = [dep["target_concept"] for dep in dependency_edges[:5]]  # 最多5个依赖
-        if dep_concepts:
-            dependency_info = f"""
-## 前置知识依赖：
-当前知识点依赖以下前置知识点，生成题目时可以考虑：
-- 将这些前置知识点作为干扰项（如果学生没有掌握前置知识，容易选错）
-- 将这些前置知识点作为题目的前置条件或背景信息
-- 前置知识点列表：{', '.join(dep_concepts)}
-"""
-    
-    # 构建完整的知识点上下文
-    enhanced_summary = knowledge_summary
-    if hierarchy_info:
-        enhanced_summary = hierarchy_info + "\n" + enhanced_summary
-    if dependency_info:
-        enhanced_summary = enhanced_summary + "\n" + dependency_info
-    
-    # 使用 PromptManager 构建提示词（传递增强的摘要）
+    # 直接使用 PromptManager 构建提示词（所有提示词组装逻辑已在 prompts 模块中定义）
     return PromptManager.build_knowledge_based_prompt(
         core_concept=core_concept,
         bloom_level=bloom_level,
-        knowledge_summary=enhanced_summary,  # 使用增强的摘要
+        knowledge_summary=knowledge_summary,
         prerequisites_context=prerequisites_context,
         confusion_points=confusion_points,
         application_scenarios=application_scenarios,
@@ -597,59 +557,21 @@ def validate_question_distribution(questions: List[Dict[str, Any]],
     return result
 
 
-def build_system_prompt(include_type_requirements: bool = True) -> str:
+def build_system_prompt(include_type_requirements: bool = True, mode: Optional[str] = None) -> str:
     """
     构建系统提示词（包含通用规则和题型要求）
     
     Args:
         include_type_requirements: 是否包含通用题型要求说明
+        mode: 出题模式（"课后习题" 或 "提高习题"），如果为 None 则使用基础提示词
         
     Returns:
         完整的系统提示词字符串
     """
-    return PromptManager.build_system_prompt(include_type_requirements=include_type_requirements)
+    return PromptManager.build_system_prompt(include_type_requirements=include_type_requirements, mode=mode)
 
 
-def build_task_specific_prompt(question_types: List[str], question_count: int, 
-                               context: Optional[str] = None, 
-                               adaptive: bool = False,
-                               knowledge_context: Optional[Dict[str, Any]] = None,
-                               allowed_difficulties: Optional[List[str]] = None,
-                               strict_plan_mode: bool = False) -> str:
-    """
-    构建具体任务要求的提示词（用于用户提示词）
-    
-    Args:
-        question_types: 题型列表（必须指定，不能为空）
-        question_count: 题目数量
-        context: 教材内容上下文（用于检测是否包含代码，已废弃，保留用于兼容）
-        adaptive: 是否启用自适应模式（已废弃，始终为 False，保留用于兼容）
-        knowledge_context: 知识点上下文（包含核心概念、Bloom层级、前置知识点等）
-        allowed_difficulties: 允许的难度列表，如 ["中等", "困难"]，None 表示不限制
-        strict_plan_mode: 是否启用严格计划模式（必须严格按照要求的题型和数量生成）
-        
-    Returns:
-        具体任务要求的提示词字符串（不包含通用规则）
-    """
-    # 提取知识点信息
-    bloom_level = None
-    core_concept = None
-    
-    if knowledge_context:
-        bloom_level = knowledge_context.get("bloom_level")
-        core_concept = knowledge_context.get("core_concept")
-    
-    # 使用 PromptManager 构建任务提示词
-    return PromptManager.build_task_specific_prompt(
-        question_types=question_types,
-        question_count=question_count,
-        context=context,
-        adaptive=adaptive,
-        bloom_level=bloom_level,
-        core_concept=core_concept,
-        allowed_difficulties=allowed_difficulties,
-        strict_plan_mode=strict_plan_mode
-    )
+    # build_task_specific_prompt 函数已废弃，使用 PromptManager.build_question_generation_user_prompt 替代
 
 
 class OpenRouterClient:
@@ -798,7 +720,8 @@ class OpenRouterClient:
         on_status_update=None,
         retry_count: int = 0,
         chunks: Optional[List[Dict[str, Any]]] = None,
-        allowed_difficulties: Optional[List[str]] = None
+        allowed_difficulties: Optional[List[str]] = None,
+        mode: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         生成一批题目（内部方法，支持重试）
@@ -819,49 +742,44 @@ class OpenRouterClient:
         logger.info(f"[流式生成] 开始生成批次 - 题型: {batch_question_types}, 数量: {batch_count}, 章节: {chapter_name or '未指定'}, 重试: {retry_count}")
         
         # 获取知识点上下文
-        knowledge_context = {}
+        knowledge_info = {}
         if chunks:
-            knowledge_context = extract_knowledge_from_chunks(chunks)
-            if knowledge_context.get("core_concept"):
-                logger.info(f"[流式生成] 提取到知识点 - 核心概念: {knowledge_context.get('core_concept')}")
+            knowledge_info = extract_knowledge_from_chunks(chunks)
+            if knowledge_info.get("core_concept"):
+                logger.info(f"[流式生成] 提取到知识点 - 核心概念: {knowledge_info.get('core_concept')}")
         
         # 验证题型列表不能为空
         if not batch_question_types or len(batch_question_types) == 0:
             raise ValueError("batch_question_types 不能为空，必须指定要生成的题型")
         
-        # 构建具体任务要求提示词（用于用户提示词）
-        task_prompt = build_task_specific_prompt(
-            batch_question_types,
-            batch_count,
-            context=context,
-            adaptive=False,
-            knowledge_context=knowledge_context if knowledge_context else None,
-            allowed_difficulties=allowed_difficulties
-        )
+        # 构建完整的用户提示词（所有内容在一个字符串中）
+        core_concept = knowledge_info.get("core_concept")
+        bloom_level = knowledge_info.get("bloom_level")
+        knowledge_summary = knowledge_info.get("knowledge_summary")
+        prerequisites_context = knowledge_info.get("prerequisites_context", [])
+        confusion_points = knowledge_info.get("confusion_points", [])
+        application_scenarios = knowledge_info.get("application_scenarios", [])
+        reference_content = context  # 使用传入的context作为参考内容
         
-        # 构建前置知识点上下文提示
-        core_concept = knowledge_context.get("core_concept")
-        prerequisites_context = knowledge_context.get("prerequisites_context", [])
-        prerequisites_prompt = PromptManager.build_prerequisites_prompt(
-            prerequisites_context=prerequisites_context,
-            core_concept=core_concept
-        )
-        
-        # 构建用户提示词（只包含具体任务信息）
-        user_prompt = PromptManager.build_user_prompt_base(
-            adaptive=False,
+        user_prompt = PromptManager.build_question_generation_user_prompt(
             question_count=batch_count,
+            question_types=batch_question_types,
             chapter_name=chapter_name,
             core_concept=core_concept,
-            knowledge_prompt="",  # 流式模式下不包含知识点提示，因为上下文已经在前面
-            prerequisites_prompt=prerequisites_prompt,
-            coherence_prompt="",  # 流式模式下不需要连贯性提示
-            task_prompt=task_prompt,
-            context=context
+            bloom_level=bloom_level,
+            knowledge_summary=knowledge_summary,
+            prerequisites_context=prerequisites_context,
+            confusion_points=confusion_points,
+            application_scenarios=application_scenarios,
+            reference_content=reference_content,
+            allowed_difficulties=allowed_difficulties,
+            strict_plan_mode=False,  # 流式生成不使用严格模式
+            textbook_name=None,
+            mode=mode
         )
         
-        # 构建系统提示词（包含通用规则和题型要求）
-        system_prompt = build_system_prompt(include_type_requirements=True)
+        # 构建系统提示词（包含通用规则和题型要求，根据模式选择不同的提示词）
+        system_prompt = build_system_prompt(include_type_requirements=True, mode=mode)
         
         # 获取 Few-Shot 示例
         few_shot_example = PromptManager.get_few_shot_example()
@@ -1249,6 +1167,7 @@ class OpenRouterClient:
         textbook_name: str,
         file_chunks_info: List[Dict[str, Any]],
         existing_type_distribution: Optional[Dict[str, int]] = None,
+        mode: str = "课后习题",
         retry_count: int = 0
     ) -> List[ChunkGenerationPlan]:
         """
@@ -1282,76 +1201,17 @@ class OpenRouterClient:
                 "content_summary": content_summary[:500] if content_summary else ""  # 限制摘要长度
             })
         
-        # 构建系统提示词
-        system_prompt = """你是一个专业的计算机教材习题规划专家。你的任务是为当前文件的每个切片规划题目生成任务。
-
-## 任务要求：
-
-1. **总题量覆盖**：确保所有章节都有足够的题目覆盖，重要章节应分配更多题目。
-
-2. **题型比例均衡**：在全书范围内，各题型（单选题、多选题、判断题、填空题、简答题、编程题）的比例应该均衡。建议比例：
-   - 单选题：20-30%
-   - 多选题：15-25%
-   - 判断题：15-25%
-   - 填空题：10-20%
-   - 简答题：10-20%
-   - 编程题：10-20%
-
-3. **题目数量分配**：
-   - 每个切片根据内容深度分配 1-10 题
-   - 基础概念切片：1-3 题
-   - 中等深度切片：3-6 题
-   - 深度内容切片：6-10 题
-
-4. **题型选择原则**：
-   - 根据切片内容特点选择合适的题型
-   - 如果内容包含代码、算法，优先包含编程题或填空题
-   - 概念性内容适合使用选择题和判断题
-   - 需要详细解释的内容适合使用简答题
-
-5. **题型精确数量**：
-   - 必须为每个切片规划每种题型的精确数量
-   - type_distribution 中每种题型的数量之和必须等于 question_count
-   - 例如：如果 question_count=5，type_distribution 可以是 {"单选题": 2, "多选题": 2, "判断题": 1}
-
-## 输出格式：
-
-请严格按照以下 JSON 格式返回，不要添加任何额外的文本、说明或代码块标记：
-
-```json
-{
-  "plans": [
-    {
-      "chunk_id": 123,
-      "question_count": 5,
-      "question_types": ["单选题", "多选题", "判断题"],
-      "type_distribution": {
-        "单选题": 2,
-        "多选题": 2,
-        "判断题": 1
-      }
-    }
-  ],
-  "total_questions": 5,
-  "type_distribution": {
-    "单选题": 2,
-    "多选题": 2,
-    "判断题": 1
-  }
-}
-```
-
-**重要**：
-- 必须为每个切片生成一个计划（plans 数组长度必须等于输入的切片数量）
-- total_questions 必须等于所有切片 question_count 的总和
-- 每个切片的 question_count 必须在 1-10 之间
-- 每个切片的 question_types 至少包含一种题型
-- 每个切片的 type_distribution 必须包含该切片所有题型的精确数量，且总和等于 question_count
-- type_distribution（顶层）必须统计当前文件所有切片的题型分布总和"""
+        # 从数据库读取任务规划系统提示词
+        try:
+            system_prompt = PromptManager.get_task_planning_system_prompt()
+        except Exception as e:
+            logger.error(f"[规划任务] 无法从数据库获取任务规划系统提示词: {e}")
+            raise ValueError(f"无法从数据库获取任务规划系统提示词: {e}")
         
-        # 构建用户提示词
+        # 构建切片目录文本
         chunks_text = "\n".join([
             f"{idx + 1}. **切片 ID: {chunk['chunk_id']}** | **章节: {chunk['chapter_name']}**\n"
+            f"   内容摘要: {chunk['content_summary'] if chunk.get('content_summary') else '（无摘要）'}\n"
             for idx, chunk in enumerate(chunks_catalog)
         ])
         
@@ -1368,21 +1228,33 @@ class OpenRouterClient:
 
 **注意**：请参考上述题型分布，确保当前文件的规划与整体分布保持协调，避免某些题型过多或过少。"""
         
-        user_prompt = f"""请为以下教材的当前文件规划题目生成任务：
+        # 使用 PromptManager 构建用户提示词
+        try:
+            # 构建基础用户提示词
+            base_user_prompt = PromptManager.build_task_planning_user_prompt(
+                textbook_name=textbook_name,
+                chunks_text=chunks_text,
+                chunk_count=len(chunks_catalog)
+            )
+            
+            # 如果有已规划的题型分布，追加到提示词中
+            if existing_distribution_text:
+                mode_text = "提高习题" if mode == "提高习题" else "课后习题"
+                user_prompt = f"""{base_user_prompt}
 
-## 教材信息：
-**教材名称**：{textbook_name}
+## 出题模式：
+**模式**：{mode_text}
 
-## 当前文件的切片目录（共 {len(chunks_catalog)} 个切片）：
+{existing_distribution_text}
 
-{chunks_text}{existing_distribution_text}
-
-请根据以上信息，为当前文件的每个切片规划题目生成任务。确保：
-1. 总题量覆盖所有章节
-2. 与已规划文件的题型分布保持协调（如果提供了已规划分布）
-3. 每个切片根据内容深度分配 1-10 题
-
-请严格按照 JSON 格式返回，不要添加任何额外的文本、说明或代码块标记。直接返回 JSON 对象即可。"""
+**额外要求**：
+- 严格按照{mode_text}模式的特点和要求进行规划
+- 与已规划文件的题型分布保持协调（如果提供了已规划分布）"""
+            else:
+                user_prompt = base_user_prompt
+        except Exception as e:
+            logger.error(f"[规划任务] 构建任务规划用户提示词失败: {e}")
+            raise ValueError(f"构建任务规划用户提示词失败: {e}")
         
         # 构建请求消息
         messages = [
@@ -1482,7 +1354,7 @@ class OpenRouterClient:
                             retry_delay = get_retry_delay(self.model, retry_count)
                             await asyncio.sleep(retry_delay)
                             return await self._plan_single_file(
-                                textbook_name, file_chunks_info, existing_type_distribution, retry_count + 1
+                                textbook_name, file_chunks_info, existing_type_distribution, mode, retry_count + 1
                             )
                         else:
                             try:
@@ -1517,10 +1389,22 @@ class OpenRouterClient:
                             error_parts.append(f"多余的切片 ID: {extra_ids}")
                         raise ValueError("规划结果中的切片 ID 与输入不匹配: " + ", ".join(error_parts))
                     
+                    # 构建 chunk_id 到 chapter_name 的映射
+                    chunk_id_to_chapter_name = {
+                        chunk["chunk_id"]: chunk.get("chapter_name", "未命名章节")
+                        for chunk in file_chunks_info
+                    }
+                    
                     # 构建 ChunkGenerationPlan 对象列表
                     chunk_plans = []
                     for plan_item in plans:
-                        chunk_plan = ChunkGenerationPlan(**plan_item)
+                        chunk_id = plan_item.get("chunk_id")
+                        # 从映射中获取 chapter_name，如果 AI 返回的结果中没有则使用默认值
+                        chapter_name = plan_item.get("chapter_name") or chunk_id_to_chapter_name.get(chunk_id, "未命名章节")
+                        chunk_plan = ChunkGenerationPlan(
+                            **plan_item,
+                            chapter_name=chapter_name
+                        )
                         chunk_plans.append(chunk_plan)
                     
                     logger.info(f"[规划任务] 单文件规划完成 - 切片数: {len(chunk_plans)}, 总题目数: {sum(p.question_count for p in chunk_plans)}")
@@ -1595,6 +1479,7 @@ class OpenRouterClient:
         self,
         textbook_name: str,
         chunks_info: List[Dict[str, Any]],
+        mode: str = "课后习题",
         retry_count: int = 0
     ) -> TextbookGenerationPlan:
         """
@@ -1610,12 +1495,13 @@ class OpenRouterClient:
                 - file_id: 文件 ID (str) - 用于按文件分组
                 - chapter_name: 章节名称 (str)
                 - content_summary: 内容摘要 (str)
+            mode: 出题模式（"课后习题" 或 "提高习题"）
             retry_count: 当前重试次数（仅用于整体重试，单文件重试在 _plan_single_file 中处理）
             
         Returns:
             TextbookGenerationPlan 对象，包含所有切片的生成计划
         """
-        logger.info(f"[规划任务] 开始规划题目生成任务 - 教材: {textbook_name}, 切片数: {len(chunks_info)}, 重试次数: {retry_count}")
+        logger.info(f"[规划任务] 开始规划题目生成任务 - 教材: {textbook_name}, 模式: {mode}, 切片数: {len(chunks_info)}, 重试次数: {retry_count}")
         
         if not chunks_info:
             raise ValueError("切片信息列表不能为空")
@@ -1664,6 +1550,7 @@ class OpenRouterClient:
                 textbook_name=textbook_name,
                 file_chunks_info=file_chunks_info,
                 existing_type_distribution=accumulated_type_distribution if accumulated_type_distribution else None,
+                mode=mode,
                 retry_count=0  # 单文件重试在 _plan_single_file 内部处理
             )
             
@@ -1689,114 +1576,6 @@ class OpenRouterClient:
         
         logger.info(f"[规划任务] 规划完成 - 总题目数: {total_questions}, 题型分布: {accumulated_type_distribution}")
         return textbook_plan
-        
-        # 构建系统提示词
-        system_prompt = """你是一个专业的计算机教材习题规划专家。你的任务是为整本教材的每个切片规划题目生成任务。
-
-## 任务要求：
-
-1. **总题量覆盖**：确保所有章节都有足够的题目覆盖，重要章节应分配更多题目。
-
-2. **题型比例均衡**：在全书范围内，各题型（单选题、多选题、判断题、填空题、简答题、编程题）的比例应该均衡。建议比例：
-   - 单选题：20-30%
-   - 多选题：15-25%
-   - 判断题：15-25%
-   - 填空题：10-20%
-   - 简答题：10-20%
-   - 编程题：10-20%
-
-3. **题目数量分配**：
-   - 每个切片根据内容深度分配 1-6 题
-   - 基础概念切片：1-2 题
-   - 中等深度切片：2-4 题
-   - 深度内容切片：4-6 题
-
-4. **题型选择原则**：
-   - 根据切片内容特点选择合适的题型
-   - 如果内容包含代码、算法，优先包含编程题或填空题
-   - 概念性内容适合使用选择题和判断题
-   - 需要详细解释的内容适合使用简答题
-
-5. **题型精确数量**：
-   - 必须为每个切片规划每种题型的精确数量
-   - type_distribution 中每种题型的数量之和必须等于 question_count
-   - 例如：如果 question_count=5，type_distribution 可以是 {"单选题": 2, "多选题": 2, "判断题": 1}
-
-## 输出格式：
-
-请严格按照以下 JSON 格式返回，不要添加任何额外的文本、说明或代码块标记：
-
-```json
-{
-  "plans": [
-    {
-      "chunk_id": 123,
-      "question_count": 5,
-      "question_types": ["单选题", "多选题", "判断题"],
-      "type_distribution": {
-        "单选题": 2,
-        "多选题": 2,
-        "判断题": 1
-      }
-    },
-    {
-      "chunk_id": 124,
-      "question_count": 3,
-      "question_types": ["填空题", "简答题"],
-      "type_distribution": {
-        "填空题": 1,
-        "简答题": 2
-      }
-    }
-  ],
-  "total_questions": 8,
-  "type_distribution": {
-    "单选题": 2,
-    "多选题": 2,
-    "判断题": 1,
-    "填空题": 1,
-    "简答题": 2
-  }
-}
-```
-
-**重要**：
-- 必须为每个切片生成一个计划（plans 数组长度必须等于输入的切片数量）
-- total_questions 必须等于所有切片 question_count 的总和
-- 每个切片的 question_count 必须在 1-10 之间
-- 每个切片的 question_types 至少包含一种题型
-- 每个切片的 type_distribution 必须包含该切片所有题型的精确数量，且总和等于 question_count
-- type_distribution（顶层）必须统计所有切片的题型分布总和
-"""
-        
-        # 构建用户提示词
-        chunks_text = "\n".join([
-            f"{idx + 1}. **切片 ID: {chunk['chunk_id']}** | **章节: {chunk['chapter_name']}**\n"
-            f"   内容摘要: {chunk['content_summary'] if chunk['content_summary'] else '（无摘要）'}\n"
-            for idx, chunk in enumerate(chunks_catalog)
-        ])
-        
-        user_prompt = f"""请为以下教材规划题目生成任务：
-
-## 教材信息：
-**教材名称**：{textbook_name}
-
-## 切片目录（共 {len(chunks_catalog)} 个切片）：
-
-{chunks_text}
-
-请根据以上信息，为每个切片规划题目生成任务。确保：
-1. 总题量覆盖所有章节
-2. 全书范围内各题型比例均衡
-3. 每个切片根据内容深度分配 1-10 题
-
-请严格按照 JSON 格式返回，不要添加任何额外的文本、说明或代码块标记。直接返回 JSON 对象即可。"""
-        
-        # 构建请求消息
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
         
         # 调用 OpenRouter API
         headers = {
@@ -2029,7 +1808,8 @@ class OpenRouterClient:
         chunks: Optional[List[Dict[str, Any]]] = None,
         allowed_difficulties: Optional[List[str]] = None,
         textbook_name: Optional[str] = None,
-        strict_plan_mode: bool = False
+        strict_plan_mode: bool = False,
+        mode: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         生成一批题目（非流式，内部方法，支持重试）
@@ -2072,17 +1852,7 @@ class OpenRouterClient:
                         if dep_node:
                             knowledge_nodes.append(dep_node)
         
-        # 2. 构建基于知识点的提示词（包含层级背景和横向依赖）
-        knowledge_prompt = ""
-        if knowledge_info.get("core_concept"):
-            knowledge_prompt = build_knowledge_based_prompt(knowledge_info, chunks)
-        else:
-            # 如果没有知识点信息，只提供基本信息（与测试生成接口保持一致）
-            knowledge_prompt = "## 教材信息：\n"
-            if textbook_name:
-                knowledge_prompt += f"**教材名称**：{textbook_name}\n"
-        
-        # 提取章节名称（如果还没有提取）
+        # 2. 提取章节名称（如果还没有提取）
         if not chapter_name and chunks:
             chapter_name = get_chapter_name_from_chunks(chunks)
         
@@ -2090,40 +1860,34 @@ class OpenRouterClient:
         if not batch_question_types or len(batch_question_types) == 0:
             raise ValueError("batch_question_types 不能为空，必须指定要生成的题型")
         
-        # 4. 构建具体任务要求提示词（用于用户提示词）
-        task_prompt = build_task_specific_prompt(
-            batch_question_types,
-            batch_count,
-            context=None,  # 与测试生成接口保持一致，不使用原始文本上下文
-            adaptive=False,
-            knowledge_context=knowledge_info if knowledge_info.get("core_concept") else None,
-            allowed_difficulties=allowed_difficulties,
-            strict_plan_mode=strict_plan_mode  # 传递严格计划模式标志
-        )
-        
-        # 5. 构建连贯性说明
+        # 4. 构建完整的用户提示词（所有内容在一个字符串中）
         core_concept = knowledge_info.get("core_concept")
+        bloom_level = knowledge_info.get("bloom_level")
+        knowledge_summary = knowledge_info.get("knowledge_summary")
         prerequisites_context = knowledge_info.get("prerequisites_context", [])
-        coherence_prompt = PromptManager.build_coherence_prompt(
-            prerequisites_context=prerequisites_context,
-            core_concept=core_concept
-        )
+        confusion_points = knowledge_info.get("confusion_points", [])
+        application_scenarios = knowledge_info.get("application_scenarios", [])
+        reference_content = chunks[0].get("content", "") if chunks else None
         
-        # 6. 构建用户提示词（基于知识点，只包含具体任务信息，与测试生成接口保持一致）
-        user_prompt = PromptManager.build_user_prompt_base(
-            adaptive=False,
+        user_prompt = PromptManager.build_question_generation_user_prompt(
             question_count=batch_count,
+            question_types=batch_question_types,
             chapter_name=chapter_name,
-            core_concept=None,  # 已在 knowledge_prompt 中包含
-            knowledge_prompt=knowledge_prompt,
-            prerequisites_prompt="",  # 已在 knowledge_prompt 中包含
-            coherence_prompt=coherence_prompt,
-            task_prompt=task_prompt,
-            context=None  # 不使用原始文本上下文，与测试生成接口保持一致
+            core_concept=core_concept,
+            bloom_level=bloom_level,
+            knowledge_summary=knowledge_summary,
+            prerequisites_context=prerequisites_context,
+            confusion_points=confusion_points,
+            application_scenarios=application_scenarios,
+            reference_content=reference_content,
+            allowed_difficulties=allowed_difficulties,
+            strict_plan_mode=strict_plan_mode,
+            textbook_name=textbook_name,
+            mode=mode
         )
         
-        # 构建系统提示词（包含通用规则和题型要求）
-        system_prompt = build_system_prompt(include_type_requirements=True)
+        # 构建系统提示词（包含通用规则和题型要求，根据模式选择不同的提示词）
+        system_prompt = build_system_prompt(include_type_requirements=True, mode=mode)
         
         # 获取 Few-Shot 示例
         few_shot_example = PromptManager.get_few_shot_example()
@@ -2170,12 +1934,9 @@ class OpenRouterClient:
         print("\n[全书出题] Few-Shot 示例:")
         print("-"*80)
         print(few_shot_example[:500] + "..." if len(few_shot_example) > 500 else few_shot_example)
-        print("\n[全书出题] 知识点提示词:")
+        print("\n[全书出题] 完整用户提示词:")
         print("-"*80)
-        print(knowledge_prompt[:500] + "..." if len(knowledge_prompt) > 500 else knowledge_prompt)
-        print("\n[全书出题] 任务提示词:")
-        print("-"*80)
-        print(user_prompt[:1000] + "..." if len(user_prompt) > 1000 else user_prompt)
+        print(user_prompt[:2000] + "..." if len(user_prompt) > 2000 else user_prompt)
         print("\n[全书出题] 模型: " + self.model)
         print("[全书出题] max_tokens: " + str(max_tokens))
         print("="*80 + "\n")
@@ -2618,7 +2379,8 @@ async def generate_questions_for_chunk(
     type_distribution: Dict[str, int],
     api_key: Optional[str] = None,
     model: Optional[str] = None,
-    textbook_name: Optional[str] = None
+    textbook_name: Optional[str] = None,
+    mode: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
     为单个切片生成题目（基于知识点）
@@ -2680,7 +2442,8 @@ async def generate_questions_for_chunk(
             chunks=[chunk],  # 用于提取知识点
             allowed_difficulties=None,
             textbook_name=textbook_name,  # 传递教材名称
-            strict_plan_mode=True  # 启用严格计划模式
+            strict_plan_mode=True,  # 启用严格计划模式
+            mode=mode  # 传递出题模式
         )
         all_questions.extend(batch_questions)
         logger.info(f"[切片生成] 题型 {question_type} 生成完成 - 实际生成 {len(batch_questions)} 道")

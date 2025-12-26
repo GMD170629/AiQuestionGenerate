@@ -16,16 +16,18 @@ async def get_all_questions(
     file_id: Optional[str] = None,
     question_type: Optional[str] = None,
     textbook_id: Optional[str] = None,
+    difficulty: Optional[str] = None,
     limit: Optional[int] = None,
     offset: int = 0
 ):
     """
-    获取所有题目列表（支持按文件、题型和教材筛选）
+    获取所有题目列表（支持按文件、题型、教材和难度筛选）
     
     Args:
         file_id: 文件 ID（可选，如果提供则只返回该文件的题目）
         question_type: 题型（可选，如果提供则只返回该题型的题目）
         textbook_id: 教材 ID（可选，如果提供则只返回该教材的题目）
+        difficulty: 难度（可选，如果提供则只返回该难度的题目）
         limit: 限制返回数量（可选）
         offset: 偏移量（用于分页）
     
@@ -37,11 +39,12 @@ async def get_all_questions(
             file_id=file_id,
             question_type=question_type,
             textbook_id=textbook_id,
+            difficulty=difficulty,
             limit=limit,
             offset=offset
         )
         
-        total = db.get_question_count(file_id=file_id, question_type=question_type, textbook_id=textbook_id)
+        total = db.get_question_count(file_id=file_id, question_type=question_type, textbook_id=textbook_id, difficulty=difficulty)
         
         return JSONResponse(
             content={

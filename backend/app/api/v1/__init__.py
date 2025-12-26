@@ -15,6 +15,7 @@ from app.api.v1.endpoints import (
     knowledge_graph,
     knowledge_extraction,
     test_generation,
+    prompts,
     dev,
 )
 
@@ -33,6 +34,7 @@ api_router.include_router(tasks.router)
 api_router.include_router(knowledge_graph.router)
 api_router.include_router(knowledge_extraction.router)
 api_router.include_router(test_generation.router)
+api_router.include_router(prompts.router, prefix="/prompts", tags=["prompts"])
 
 # 开发模式路由（仅在开发模式下注册）
 from app.core.config import settings

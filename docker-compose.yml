@@ -1,22 +1,21 @@
-version: '3.9'
-
 # ============================================
 # 环境切换说明
 # ============================================
-# 方法一：使用扩展配置文件（推荐）
-#   开发环境：docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-#   生产环境：docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# 方法一：使用便捷脚本（推荐，最简单）
+#   开发环境：./docker-dev.sh up -d
+#   生产环境：./docker-prod.sh up -d
 #
 # 方法二：使用 profiles
 #   开发环境：docker-compose --profile dev up -d
 #   生产环境：docker-compose --profile prod up -d
 #
-# 方法三：使用便捷脚本
-#   开发环境：./docker-dev.sh up -d
-#   生产环境：./docker-prod.sh up -d
+# 方法三：使用扩展配置文件
+#   开发环境：docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   生产环境：docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # ============================================
 
 services:
+  # ========== 开发环境服务 ==========
   backend:
     build:
       context: ./backend

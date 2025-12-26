@@ -1,24 +1,24 @@
-version: '3.9'
-
-# 生产环境配置
+# 生产环境配置（覆盖基础配置）
 # 使用方法：docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 services:
   backend:
     build:
-      context: ./backend
       dockerfile: Dockerfile.prod
+    # 生产环境：移除源代码挂载，只保留数据目录
+    # 注意：docker-compose 扩展配置会合并 volumes，所以需要明确列出所有要保留的
     volumes:
-      # 生产环境不挂载源代码
       - ./backend/data:/app/data
       - ./backend/uploads:/app/uploads
     environment:
       - DEV_MODE=false
+    # 移除源代码目录挂载（通过不包含 ./backend:/app 来实现）
 
   frontend:
     build:
-      context: ./frontend
       dockerfile: Dockerfile
+    # 生产环境：移除所有 volumes（使用构建好的镜像）
+    volumes: []
     environment:
       - NODE_ENV=production
       - BACKEND_URL=http://backend:8000

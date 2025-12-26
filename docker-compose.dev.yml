@@ -1,12 +1,9 @@
-version: '3.9'
-
-# 开发环境配置
+# 开发环境配置（覆盖基础配置）
 # 使用方法：docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 services:
   backend:
     build:
-      context: ./backend
       dockerfile: Dockerfile
     volumes:
       - ./backend:/app
@@ -15,7 +12,6 @@ services:
 
   frontend:
     build:
-      context: ./frontend
       dockerfile: Dockerfile.dev
     volumes:
       - ./frontend:/app

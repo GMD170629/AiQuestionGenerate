@@ -271,8 +271,10 @@ export default function QuestionGenerator({ file, onGenerateSuccess, onClose }: 
           <div className="flex items-center gap-4">
             <Input
               type="number"
-              min="1"
-              max="50"
+              inputProps={{
+                min: 1,
+                max: 50,
+              }}
               value={questionCount}
               onChange={(e) => setQuestionCount(parseInt(e.target.value) || 1)}
               disabled={isGenerating}

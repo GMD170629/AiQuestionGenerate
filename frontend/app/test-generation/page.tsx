@@ -328,8 +328,10 @@ export default function TestGenerationPage() {
               </label>
               <Input
                 type="number"
-                min="1"
-                max="10"
+                inputProps={{
+                  min: 1,
+                  max: 10,
+                }}
                 value={questionCount}
                 onChange={(e) => setQuestionCount(parseInt(e.target.value) || 5)}
                 className="w-full"

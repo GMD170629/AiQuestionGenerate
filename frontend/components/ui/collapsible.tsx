@@ -10,11 +10,13 @@ import {
 import { ExpandMore } from '@mui/icons-material'
 import { cn } from "@/lib/utils"
 
-export interface CollapsibleProps extends AccordionProps {
+export interface CollapsibleProps {
   open?: boolean
   onOpenChange?: (open: boolean) => void
   trigger?: React.ReactNode
   children?: React.ReactNode
+  className?: string
+  [key: string]: any
 }
 
 const Collapsible = React.forwardRef<HTMLDivElement, CollapsibleProps>(

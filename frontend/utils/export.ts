@@ -168,7 +168,7 @@ export function exportQuestionsToMarkdown(
       // 选择题：答案格式为选项字母，如 "A" 或 "A,B" 或 "CD"
       const answerLabels = q.answer.split(/[,，;；\s]/).map(a => a.trim().toUpperCase()).filter(a => a)
       // 去除重复并排序
-      const uniqueAnswers = [...new Set(answerLabels)]
+      const uniqueAnswers = Array.from(new Set(answerLabels))
       content += `[答案]${uniqueAnswers.join('')}\n`
     } else if (q.type === '判断题') {
       // 判断题：答案格式为 "正确" 或 "错误"

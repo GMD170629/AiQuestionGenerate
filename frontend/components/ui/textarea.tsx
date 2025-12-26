@@ -3,8 +3,9 @@
 import * as React from "react"
 import { TextField, TextFieldProps } from '@mui/material'
 
-export interface TextareaProps extends TextFieldProps {
+export interface TextareaProps extends Omit<TextFieldProps, 'multiline'> {
   rows?: number
+  className?: string
 }
 
 const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(

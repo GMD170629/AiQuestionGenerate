@@ -434,7 +434,7 @@ export default function TextbookManager() {
               </label>
               <Textarea
                 value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="请输入教材描述（可选）"
                 rows={3}
               />
@@ -475,7 +475,7 @@ export default function TextbookManager() {
               </label>
               <Textarea
                 value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="请输入教材描述（可选）"
                 rows={3}
               />

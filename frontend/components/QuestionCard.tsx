@@ -279,6 +279,7 @@ export default function QuestionCard({ question, index, isSelected = false, onSe
             </motion.button>
           </div>
           <div className="rounded-lg overflow-hidden">
+            {/* @ts-ignore - react-syntax-highlighter type compatibility issue */}
             <SyntaxHighlighter
               language="python"
               style={vscDarkPlus}

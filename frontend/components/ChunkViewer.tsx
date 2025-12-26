@@ -58,6 +58,7 @@ function MarkdownWithFormulas({ content }: { content: string }) {
           
           return !inline && match ? (
             <div className="my-4">
+              {/* @ts-ignore - react-syntax-highlighter type compatibility issue */}
               <SyntaxHighlighter
                 style={vscDarkPlus}
                 language={language}
@@ -488,13 +489,13 @@ export default function ChunkViewer({ fileId, filename, onClose }: ChunkViewerPr
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
                           {contentTypes.hasCode && (
-                            <Code className="h-4 w-4 text-blue-500" title="包含代码" />
+                            <Code className="h-4 w-4 text-blue-500" />
                           )}
                           {contentTypes.hasImage && (
-                            <Image className="h-4 w-4 text-green-500" title="包含图片" />
+                            <Image className="h-4 w-4 text-green-500" />
                           )}
                           {contentTypes.hasFormula && (
-                            <Calculator className="h-4 w-4 text-purple-500" title="包含公式" />
+                            <Calculator className="h-4 w-4 text-purple-500" />
                           )}
                         </div>
                         <div className="flex-1 min-w-0 ml-4">

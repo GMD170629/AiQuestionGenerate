@@ -348,7 +348,7 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
                     ul: ({ children }) => <ul className="list-disc list-inside mb-4 space-y-2 text-slate-800 dark:text-slate-200">{children}</ul>,
                     ol: ({ children }) => <ol className="list-decimal list-inside mb-4 space-y-2 text-slate-800 dark:text-slate-200">{children}</ol>,
                     li: ({ children }) => <li className="ml-4">{children}</li>,
-                    code: ({ node, inline, className, children, ...props }) => {
+                    code: ({ node, inline, className, children, ...props }: any) => {
                       return inline ? (
                         <code className="bg-slate-200 dark:bg-slate-800 px-1.5 py-0.5 rounded text-sm font-mono text-slate-900 dark:text-slate-100" {...props}>
                           {children}

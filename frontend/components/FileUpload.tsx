@@ -278,8 +278,9 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
     
     // 使用循环处理队列中的文件
     while (true) {
-      // 检查是否被暂停或取消
-      if (queueStatusRef.current === 'paused' || queueStatusRef.current === 'cancelled') {
+      // 检查是否被暂停或取消（使用类型断言避免类型窄化问题）
+      const status = queueStatusRef.current as QueueStatus
+      if (status === 'paused' || status === 'cancelled') {
         break
       }
 
@@ -304,7 +305,7 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
       // 更新状态为上传中
       setFileQueue(prev => {
         const updated = prev.map(f => 
-          f.id === pendingItem.id ? { ...f, status: 'uploading', progress: 0 } : f
+          f.id === pendingItem.id ? { ...f, status: 'uploading' as const, progress: 0 } : f
         )
         fileQueueRef.current = updated
         return updated
@@ -314,11 +315,11 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
         const result = await uploadSingleFile(pendingItem)
         
         setFileQueue(prev => {
-          const updated = prev.map(f => 
+          const updated: FileUploadItem[] = prev.map(f => 
             f.id === pendingItem.id 
               ? { 
                   ...f, 
-                  status: 'success', 
+                  status: 'success' as const, 
                   progress: 100, 
                   result,
                   knowledgeExtraction: {
@@ -345,11 +346,11 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
         }
       } catch (error) {
         setFileQueue(prev => {
-          const updated = prev.map(f => 
+          const updated: FileUploadItem[] = prev.map(f => 
             f.id === pendingItem.id 
               ? { 
                   ...f, 
-                  status: 'error', 
+                  status: 'error' as const, 
                   progress: 0,
                   error: error instanceof Error ? error.message : '上传失败'
                 }
@@ -360,8 +361,9 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
         })
       }
 
-      // 再次检查状态，决定是否继续
-      if (queueStatusRef.current !== 'uploading') {
+      // 再次检查状态，决定是否继续（使用类型断言避免类型窄化问题）
+      const statusCheck = queueStatusRef.current as QueueStatus
+      if (statusCheck !== 'uploading') {
         break
       }
     }
@@ -378,8 +380,8 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
     setQueueStatus('paused')
     queueStatusRef.current = 'paused'
     setFileQueue(prev => {
-      const updated = prev.map(f => 
-        f.status === 'uploading' ? { ...f, status: 'paused' } : f
+      const updated: FileUploadItem[] = prev.map(f => 
+        f.status === 'uploading' ? { ...f, status: 'paused' as const } : f
       )
       fileQueueRef.current = updated
       return updated
@@ -424,9 +426,9 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
 
   const retryFile = useCallback((itemId: string) => {
     setFileQueue(prev => {
-      const updated = prev.map(f => 
+      const updated: FileUploadItem[] = prev.map(f => 
         f.id === itemId 
-          ? { ...f, status: 'pending', progress: 0, error: undefined, retryCount: f.retryCount + 1 }
+          ? { ...f, status: 'pending' as const, progress: 0, error: undefined, retryCount: f.retryCount + 1 }
           : f
       )
       fileQueueRef.current = updated
@@ -516,7 +518,7 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
-        {...getRootProps()}
+        {...(getRootProps() as any)}
         className={`
           relative border-2 border-dashed rounded-xl p-12 text-center transition-all duration-300
           ${isDragActive && !isDragReject

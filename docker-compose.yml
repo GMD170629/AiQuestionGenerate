@@ -1,4 +1,20 @@
-version: '3.8'
+version: '3.9'
+
+# ============================================
+# 环境切换说明
+# ============================================
+# 方法一：使用扩展配置文件（推荐）
+#   开发环境：docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   生产环境：docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 方法二：使用 profiles
+#   开发环境：docker-compose --profile dev up -d
+#   生产环境：docker-compose --profile prod up -d
+#
+# 方法三：使用便捷脚本
+#   开发环境：./docker-dev.sh up -d
+#   生产环境：./docker-prod.sh up -d
+# ============================================
 
 services:
   backend:
@@ -19,10 +35,12 @@ services:
       - PYTHONIOENCODING=utf-8
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL}
-      - DEV_MODE=${DEV_MODE:-false}
+      - DEV_MODE=${DEV_MODE:-true}
     restart: unless-stopped
     networks:
       - app-network
+    profiles:
+      - dev
 
   frontend:
     build:
@@ -36,17 +54,59 @@ services:
       - /app/.next
     environment:
       - NODE_ENV=development
-      # 后端地址用于 Next.js rewrites 代理（服务端使用）
       - BACKEND_URL=http://backend:8000
-      # 如果需要禁用代理模式，可以设置 NEXT_PUBLIC_API_URL（客户端直接访问）
       - NEXT_PUBLIC_API_URL=${API_URL:-}
     depends_on:
       - backend
     restart: unless-stopped
     networks:
       - app-network
+    profiles:
+      - dev
+
+  # ========== 生产环境服务（使用 profiles） ==========
+  backend-prod:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    ports:
+      - "8000:8000"
+    volumes:
+      # 生产环境不挂载源代码，只挂载数据目录
+      - ./backend/data:/app/data
+      - ./backend/uploads:/app/uploads
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - DEV_MODE=false
+    restart: unless-stopped
+    networks:
+      - app-network
+    profiles:
+      - prod
+
+  frontend-prod:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - BACKEND_URL=http://backend-prod:8000
+      - NEXT_PUBLIC_API_URL=${API_URL:-}
+    depends_on:
+      - backend-prod
+    restart: unless-stopped
+    networks:
+      - app-network
+    profiles:
+      - prod
 
 networks:
   app-network:
     driver: bridge
-

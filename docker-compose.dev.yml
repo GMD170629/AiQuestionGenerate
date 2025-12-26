@@ -1,0 +1,27 @@
+version: '3.9'
+
+# 开发环境配置
+# 使用方法：docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend:/app
+    environment:
+      - DEV_MODE=true
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NODE_ENV=development
+      - BACKEND_URL=http://backend:8000
+

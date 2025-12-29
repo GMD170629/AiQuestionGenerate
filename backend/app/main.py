@@ -3,9 +3,12 @@ FastAPI 应用主入口
 """
 
 import asyncio
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings, get_cors_config
 from app.api.v1 import api_router
@@ -31,6 +34,45 @@ def create_application() -> FastAPI:
         CORSMiddleware,
         **get_cors_config()
     )
+
+    # 全局异常处理器：确保所有错误都返回 JSON 格式
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        """处理 HTTPException，确保返回 JSON 格式"""
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail}
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """处理请求验证错误，返回 JSON 格式"""
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors()}
+        )
+
+    @app.exception_handler(Exception)
+    async def general_exception_handler(request: Request, exc: Exception):
+        """处理所有未捕获的异常，确保返回 JSON 格式"""
+        error_trace = traceback.format_exc()
+        print(f"未捕获的异常: {error_trace}")
+        
+        # 安全地获取错误消息
+        try:
+            error_msg = str(exc) if exc else "内部服务器错误"
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            error_msg = "内部服务器错误"
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": {
+                    "error": "内部服务器错误",
+                    "error_message": error_msg
+                }
+            }
+        )
 
     # 注册 API v1 路由
     app.include_router(api_router)

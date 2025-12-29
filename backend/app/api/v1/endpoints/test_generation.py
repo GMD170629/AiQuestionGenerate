@@ -4,7 +4,10 @@
 """
 
 import json
+import logging
+import traceback
 from typing import Optional
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -13,17 +16,16 @@ from app.services.ai_service import (
     OpenRouterClient,
     build_context_from_chunks,
     get_chapter_name_from_chunks,
-)
-from app.services.ai_service import (
     extract_knowledge_from_chunks,
     build_system_prompt,
     calculate_max_tokens_for_questions,
-    OpenRouterClient,
 )
-from prompts import PromptManager
 from prompts import PromptManager
 from app.core.db import db
 from app.core.cache import document_cache
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/test-generation", tags=["题目生成测试"])
 
@@ -33,8 +35,17 @@ class TestGenerationRequest(BaseModel):
     textbook_id: Optional[str] = None
     file_id: str
     chunk_index: int
+    mode: str = "课后习题"  # 出题模式：课后习题 或 提高习题
     question_count: int = 5
     question_types: Optional[list[str]] = None
+
+
+class TestPlanRequest(BaseModel):
+    """测试规划请求"""
+    textbook_id: Optional[str] = None
+    file_id: str
+    chunk_index: int
+    mode: str = "课后习题"  # 出题模式：课后习题 或 提高习题
 
 
 @router.post("/test")
@@ -92,8 +103,14 @@ async def test_generation(request: TestGenerationRequest):
         if not question_types or len(question_types) == 0:
             raise HTTPException(status_code=400, detail="question_types 不能为空，必须指定要生成的题型")
         
-        # 测试接口默认只生成中等和困难题目，不生成简单题目
-        allowed_difficulties = ["中等", "困难"]
+        # 根据模式设置难度限制
+        mode = request.mode or "课后习题"
+        if mode == "提高习题":
+            # 提高习题模式：只生成中等和困难题目
+            allowed_difficulties = ["中等", "困难"]
+        else:
+            # 课后习题模式：允许所有难度
+            allowed_difficulties = None
         
         # 构建完整的用户提示词（所有内容在一个字符串中）
         core_concept = knowledge_info.get("core_concept")
@@ -118,11 +135,11 @@ async def test_generation(request: TestGenerationRequest):
             allowed_difficulties=allowed_difficulties,
             strict_plan_mode=False,  # 测试接口不使用严格模式
             textbook_name=textbook_name,
-            mode=None  # 测试接口不指定模式，使用默认
+            mode=mode  # 使用指定的模式
         )
         
-        # 构建系统提示词（包含通用规则和题型要求）
-        system_prompt = build_system_prompt(include_type_requirements=True)
+        # 构建系统提示词（包含通用规则和题型要求，根据模式选择）
+        system_prompt = build_system_prompt(include_type_requirements=True, mode=mode)
         
         # 获取 Few-Shot 示例
         few_shot_example = PromptManager.get_few_shot_example()
@@ -158,7 +175,6 @@ async def test_generation(request: TestGenerationRequest):
             "max_tokens": max_tokens,
         }
         
-        import httpx
         from app.services.ai_service import get_timeout_config
         
         # 初始化调试信息变量
@@ -443,4 +459,123 @@ async def get_file_chunks_for_test(file_id: str):
         except (UnicodeEncodeError, UnicodeDecodeError):
             error_msg = "获取切片列表失败"
         raise HTTPException(status_code=500, detail=f"获取切片列表失败: {error_msg}")
+
+
+@router.post("/plan")
+async def plan_single_chunk(request: TestPlanRequest):
+    """
+    为单个切片规划题目生成任务（自动规划）
+    
+    返回该切片的题型和数量规划结果
+    """
+    try:
+        # 1. 获取文件信息
+        file_info = db.get_file(request.file_id)
+        if not file_info:
+            raise HTTPException(status_code=404, detail="文件不存在")
+        
+        # 2. 获取切片列表
+        chunks = db.get_chunks(request.file_id)
+        if not chunks:
+            raise HTTPException(status_code=404, detail="文件未解析或没有切片")
+        
+        # 3. 检查切片索引
+        if request.chunk_index < 0 or request.chunk_index >= len(chunks):
+            raise HTTPException(
+                status_code=400,
+                detail=f"切片索引超出范围，有效范围：0-{len(chunks)-1}"
+            )
+        
+        # 4. 获取指定的切片
+        selected_chunk = chunks[request.chunk_index]
+        
+        # 5. 获取教材信息
+        textbook_name = None
+        if request.textbook_id:
+            textbook = db.get_textbook(request.textbook_id)
+            if textbook:
+                textbook_name = textbook.get("name")
+        
+        if not textbook_name:
+            textbook_name = "未命名教材"
+        
+        # 6. 获取切片信息用于规划
+        from app.services.markdown_service import MarkdownProcessor
+        processor = MarkdownProcessor()
+        
+        metadata = selected_chunk.get("metadata", {})
+        chapter_name = processor.get_chapter_name(metadata)
+        content = selected_chunk.get("content", "")
+        content_summary = content[:500] if len(content) > 500 else content
+        
+        # 从数据库获取 chunk_id（通过 chunk_index 查询）
+        chunk_id = None
+        with db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT chunk_id
+                FROM chunks
+                WHERE file_id = ? AND chunk_index = ?
+            """, (request.file_id, request.chunk_index))
+            row = cursor.fetchone()
+            if row:
+                chunk_id = row["chunk_id"]
+        
+        if chunk_id is None:
+            # 如果数据库中没有找到，使用 chunk_index 作为临时 ID
+            chunk_id = request.chunk_index
+        
+        # 7. 构建切片信息用于规划
+        chunk_info = {
+            "chunk_id": chunk_id,
+            "file_id": request.file_id,
+            "chapter_name": chapter_name or "未命名章节",
+            "content_summary": content_summary
+        }
+        
+        # 8. 调用 AI 进行规划
+        mode = request.mode or "课后习题"
+        from app.services.ai_service import OpenRouterClient
+        
+        client = OpenRouterClient()
+        
+        # 使用 _plan_single_file 方法，但只传入一个切片
+        plans = await client._plan_single_file(
+            textbook_name=textbook_name,
+            file_chunks_info=[chunk_info],
+            existing_type_distribution=None,
+            mode=mode,
+            retry_count=0
+        )
+        
+        if not plans or len(plans) == 0:
+            raise HTTPException(status_code=500, detail="规划失败，未返回任何计划")
+        
+        # 返回第一个（也是唯一的）规划结果
+        plan = plans[0]
+        
+        return JSONResponse(content={
+            "plan": {
+                "chunk_id": plan.chunk_id,
+                "question_count": plan.question_count,
+                "question_types": plan.question_types,
+                "type_distribution": plan.type_distribution,
+                "chapter_name": plan.chapter_name,
+            },
+            "mode": mode,
+            "textbook_name": textbook_name,
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_trace = traceback.format_exc()
+        logger.error(f"[测试规划] 规划失败 - 错误: {error_msg}")
+        logger.debug(f"[测试规划] 错误堆栈:\n{error_trace}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"规划失败: {error_msg}"
+        )
 

@@ -115,9 +115,13 @@ export default function TestGenerationPage() {
   const [selectedFileId, setSelectedFileId] = useState<string>('')
   const [chunks, setChunks] = useState<Chunk[]>([])
   const [selectedChunkIndex, setSelectedChunkIndex] = useState<number>(0)
+  const [mode, setMode] = useState<string>('课后习题')
+  const [autoPlan, setAutoPlan] = useState<boolean>(true)
   const [questionCount, setQuestionCount] = useState<number>(5)
   const [questionTypes, setQuestionTypes] = useState<string[]>(['单选题', '多选题', '判断题'])
   const [loading, setLoading] = useState<boolean>(false)
+  const [planning, setPlanning] = useState<boolean>(false)
+  const [planResult, setPlanResult] = useState<{question_count: number, question_types: string[], type_distribution?: any} | null>(null)
   const [testResult, setTestResult] = useState<TestResult | null>(null)
   const [expandedSections, setExpandedSections] = useState<{
     prompts: boolean
@@ -191,10 +195,65 @@ export default function TestGenerationPage() {
       return
     }
 
+    if (!autoPlan && questionTypes.length === 0) {
+      alert('请至少选择一种题型')
+      return
+    }
+
     setLoading(true)
+    setPlanning(false)
     setTestResult(null)
+    if (!autoPlan) {
+      setPlanResult(null) // 手动模式时清除规划结果
+    }
 
     try {
+      // 如果开启自动规划，先调用规划接口
+      let finalQuestionCount = questionCount
+      let finalQuestionTypes = questionTypes
+      
+      if (autoPlan) {
+        setPlanning(true)
+        try {
+          const planResponse = await fetch(getApiUrl('/test-generation/plan'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              textbook_id: selectedTextbookId || null,
+              file_id: selectedFileId,
+              chunk_index: selectedChunkIndex,
+              mode: mode,
+            }),
+          })
+
+          if (!planResponse.ok) {
+            const errorData = await planResponse.json().catch(() => ({}))
+            throw new Error(errorData.detail || '规划失败')
+          }
+
+          const planData = await planResponse.json()
+          if (planData.plan) {
+            finalQuestionCount = planData.plan.question_count
+            finalQuestionTypes = planData.plan.question_types
+            // 保存规划结果用于显示
+            setPlanResult({
+              question_count: planData.plan.question_count,
+              question_types: planData.plan.question_types,
+              type_distribution: planData.plan.type_distribution
+            })
+          }
+        } catch (planError: any) {
+          alert(`自动规划失败: ${planError.message}`)
+          setPlanning(false)
+          setLoading(false)
+          return
+        } finally {
+          setPlanning(false)
+        }
+      }
+
       const response = await fetch(getApiUrl('/test-generation/test'), {
         method: 'POST',
         headers: {
@@ -204,17 +263,40 @@ export default function TestGenerationPage() {
           textbook_id: selectedTextbookId || null,
           file_id: selectedFileId,
           chunk_index: selectedChunkIndex,
-          question_count: questionCount,
-          question_types: questionTypes,
+          mode: mode,
+          question_count: finalQuestionCount,
+          question_types: finalQuestionTypes,
         }),
       })
 
+      // 先读取响应文本，然后尝试解析 JSON
+      const responseText = await response.text()
+
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || '测试失败')
+        let errorData
+        try {
+          errorData = JSON.parse(responseText)
+        } catch {
+          // 如果响应不是 JSON，使用文本作为错误消息
+          errorData = { detail: responseText || response.statusText || '测试失败' }
+        }
+        
+        // 处理 detail 可能是字符串或对象的情况
+        const errorMessage = typeof errorData.detail === 'string' 
+          ? errorData.detail 
+          : (errorData.detail?.error || errorData.detail?.error_message || JSON.stringify(errorData.detail) || '测试失败')
+        
+        throw new Error(errorMessage)
       }
 
-      const result = await response.json()
+      // 解析成功响应的 JSON
+      let result
+      try {
+        result = JSON.parse(responseText)
+      } catch (parseError) {
+        throw new Error(`响应格式错误: ${responseText.substring(0, 200)}`)
+      }
+
       setTestResult(result)
     } catch (error: any) {
       alert(`测试失败: ${error.message}`)
@@ -324,48 +406,119 @@ export default function TestGenerationPage() {
 
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                题目数量
+                出题模式
               </label>
-              <Input
-                type="number"
-                inputProps={{
-                  min: 1,
-                  max: 10,
-                }}
-                value={questionCount}
-                onChange={(e) => setQuestionCount(parseInt(e.target.value) || 5)}
-                className="w-full"
-              />
+              <Select value={mode} onValueChange={setMode}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="课后习题">课后习题</SelectItem>
+                  <SelectItem value="提高习题">提高习题</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
           <div className="mb-4">
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-              题型选择
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              <input
+                type="checkbox"
+                checked={autoPlan}
+                onChange={(e) => setAutoPlan(e.target.checked)}
+                className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+              />
+              <span>自动规划题型和数量</span>
             </label>
-            <div className="flex flex-wrap gap-2">
-              {['单选题', '多选题', '判断题', '填空题', '简答题', '编程题'].map(type => (
-                <button
-                  key={type}
-                  onClick={() => toggleQuestionType(type)}
-                  className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                    questionTypes.includes(type)
-                      ? 'bg-indigo-600 text-white shadow-md'
-                      : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
-                  }`}
-                >
-                  {type}
-                </button>
-              ))}
-            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 ml-6">
+              {autoPlan 
+                ? '开启后，系统将调用 LLM 自动规划该切片的题型和数量' 
+                : '关闭后，需要手动选择题型和数量'}
+            </p>
           </div>
+
+          {!autoPlan && (
+            <>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                  题目数量
+                </label>
+                <Input
+                  type="number"
+                  inputProps={{
+                    min: 1,
+                    max: 10,
+                  }}
+                  value={questionCount}
+                  onChange={(e) => setQuestionCount(parseInt(e.target.value) || 5)}
+                  className="w-full"
+                />
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                  题型选择
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {['单选题', '多选题', '判断题', '填空题', '简答题', '编程题'].map(type => (
+                    <button
+                      key={type}
+                      onClick={() => toggleQuestionType(type)}
+                      className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                        questionTypes.includes(type)
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {autoPlan && planResult && (
+            <div className="mb-4 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-200 dark:border-indigo-800">
+              <p className="text-sm font-medium text-indigo-900 dark:text-indigo-200 mb-2">
+                📋 自动规划结果
+              </p>
+              <div className="space-y-2 text-sm text-indigo-800 dark:text-indigo-300">
+                <p>
+                  <span className="font-medium">题目数量：</span>
+                  {planResult.question_count} 道
+                </p>
+                <p>
+                  <span className="font-medium">题型：</span>
+                  {planResult.question_types.join('、')}
+                </p>
+                {planResult.type_distribution && (
+                  <div>
+                    <span className="font-medium">题型分布：</span>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {Object.entries(planResult.type_distribution).map(([type, count]) => (
+                        <span key={type} className="px-2 py-1 bg-indigo-100 dark:bg-indigo-800 rounded text-xs">
+                          {type}: {String(count)} 道
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <button
             onClick={handleTest}
-            disabled={loading || !selectedFileId || chunks.length === 0}
+            disabled={loading || planning || !selectedFileId || chunks.length === 0}
             className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
-            {loading ? (
+            {planning ? (
+              <>
+                <Loader2 className="h-5 w-5 animate-spin" />
+                规划中...
+              </>
+            ) : loading ? (
               <>
                 <Loader2 className="h-5 w-5 animate-spin" />
                 测试中...

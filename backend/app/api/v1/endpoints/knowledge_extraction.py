@@ -6,10 +6,12 @@ import asyncio
 import json
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from app.core.knowledge_extraction_progress import knowledge_extraction_progress
+from app.services.markdown_service import extract_and_store_knowledge_nodes
+from app.core.db import db
 
 router = APIRouter(prefix="/knowledge-extraction", tags=["知识提取进度"])
 
@@ -123,5 +125,43 @@ async def get_knowledge_extraction_status(file_id: str):
     return {
         "file_id": file_id,
         **state
+    }
+
+
+@router.post("/{file_id}/retry")
+async def retry_knowledge_extraction(file_id: str, background_tasks: BackgroundTasks = BackgroundTasks()):
+    """
+    重试知识提取任务
+    
+    Args:
+        file_id: 文件 ID
+        background_tasks: 后台任务管理器
+        
+    Returns:
+        重试任务已启动的确认信息
+    """
+    # 检查文件是否存在
+    file_info = db.get_file(file_id)
+    if not file_info:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    
+    # 检查文件是否有切片
+    chunks = db.get_chunks(file_id)
+    if not chunks or len(chunks) == 0:
+        raise HTTPException(status_code=400, detail="文件没有切片，无法进行知识提取")
+    
+    # 清除之前的进度状态（如果存在）
+    await knowledge_extraction_progress.clear_progress(file_id)
+    
+    # 在后台异步执行知识提取任务
+    background_tasks.add_task(
+        extract_and_store_knowledge_nodes,
+        file_id=file_id
+    )
+    
+    return {
+        "file_id": file_id,
+        "message": "知识提取任务已启动",
+        "status": "started"
     }
 

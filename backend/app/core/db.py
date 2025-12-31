@@ -1775,6 +1775,20 @@ class Database:
             cursor = conn.cursor()
             now = datetime.now().isoformat()
             
+            # 验证外键约束：检查 chunk_id 是否存在
+            cursor.execute("SELECT chunk_id FROM chunks WHERE chunk_id = ?", (chunk_id,))
+            if not cursor.fetchone():
+                error_msg = f"存储知识点节点失败: chunk_id {chunk_id} 在 chunks 表中不存在 (core_concept: {core_concept})"
+                print(f"[知识提取] ✗ {error_msg}")
+                return False
+            
+            # 验证外键约束：检查 file_id 是否存在
+            cursor.execute("SELECT file_id FROM files WHERE file_id = ?", (file_id,))
+            if not cursor.fetchone():
+                error_msg = f"存储知识点节点失败: file_id {file_id} 在 files 表中不存在 (core_concept: {core_concept})"
+                print(f"[知识提取] ✗ {error_msg}")
+                return False
+            
             prerequisites_json = json.dumps(prerequisites, ensure_ascii=False)
             confusion_points_json = json.dumps(confusion_points, ensure_ascii=False)
             application_scenarios_json = json.dumps(application_scenarios, ensure_ascii=False) if application_scenarios else None
@@ -1793,7 +1807,8 @@ class Database:
                 conn.commit()
                 return True
             except sqlite3.IntegrityError as e:
-                print(f"存储知识点节点失败: {e}")
+                error_msg = f"存储知识点节点失败: {str(e)} (core_concept: {core_concept}, chunk_id: {chunk_id}, file_id: {file_id})"
+                print(f"[知识提取] ✗ {error_msg}")
                 return False
     
     def get_knowledge_node(self, node_id: str) -> Optional[Dict[str, Any]]:

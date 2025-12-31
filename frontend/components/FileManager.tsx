@@ -1,13 +1,10 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { FileText, Eye, Trash2, X, Calendar, HardDrive, Sparkles, Layers, BookOpen, Plus } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { FileText, Eye, Trash2, X, Calendar, HardDrive, Layers, BookOpen, Plus, RefreshCw, Brain } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
-import QuestionGenerator from './QuestionGenerator'
-import QuestionManager from './QuestionManager'
 import ChunkViewer from './ChunkViewer'
-import { QuestionList } from '@/types/question'
 import { getApiUrl } from '@/lib/api'
 import {
   Dialog,
@@ -15,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Progress } from '@/components/ui/progress'
 
 interface Textbook {
   textbook_id: string
@@ -31,6 +29,17 @@ interface FileInfo {
   textbooks?: Textbook[]
 }
 
+interface KnowledgeExtractionStatus {
+  file_id: string
+  status: 'not_started' | 'extracting' | 'completed' | 'failed'
+  message?: string
+  current: number
+  total: number
+  progress: number
+  percentage: number
+  current_chunk?: string
+}
+
 interface FileContent {
   file_id: string
   filename: string
@@ -39,27 +48,22 @@ interface FileContent {
 }
 
 interface FileManagerProps {
-  onQuestionsGenerated?: (questions: QuestionList) => void
 }
 
-export default function FileManager({ onQuestionsGenerated }: FileManagerProps) {
+export default function FileManager({}: FileManagerProps) {
   const [files, setFiles] = useState<FileInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [previewFile, setPreviewFile] = useState<FileContent | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
-  const [generatingFileId, setGeneratingFileId] = useState<string | null>(null)
-  const [generatedQuestions, setGeneratedQuestions] = useState<QuestionList | null>(null)
+  const [startingKnowledgeExtractionFileId, setStartingKnowledgeExtractionFileId] = useState<string | null>(null)
   const [viewingChunksFileId, setViewingChunksFileId] = useState<string | null>(null)
   const [addingToTextbookFileId, setAddingToTextbookFileId] = useState<string | null>(null)
   const [allTextbooks, setAllTextbooks] = useState<Textbook[]>([])
+  const [knowledgeStatuses, setKnowledgeStatuses] = useState<Record<string, KnowledgeExtractionStatus>>({})
+  const [retryingFileId, setRetryingFileId] = useState<string | null>(null)
+  const eventSourceRefs = useRef<Record<string, EventSource>>({})
 
-  // 当文件被删除时，如果正在生成题目，关闭生成器
-  useEffect(() => {
-    if (generatingFileId && !files.find(f => f.file_id === generatingFileId)) {
-      setGeneratingFileId(null)
-    }
-  }, [files, generatingFileId])
 
   const fetchFiles = async () => {
     try {
@@ -82,6 +86,97 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
     fetchFiles()
     fetchTextbooks()
   }, [])
+
+  // 获取所有文件的知识点提取状态
+  const fetchKnowledgeStatuses = async () => {
+    const statuses: Record<string, KnowledgeExtractionStatus> = {}
+    for (const file of files) {
+      try {
+        const response = await fetch(getApiUrl(`/knowledge-extraction/${file.file_id}/status`))
+        if (response.ok) {
+          const status = await response.json()
+          statuses[file.file_id] = status
+        }
+      } catch (err) {
+        console.error(`获取文件 ${file.file_id} 的知识点提取状态失败:`, err)
+      }
+    }
+    setKnowledgeStatuses(statuses)
+  }
+
+  // 监听文件列表变化，更新知识点提取状态
+  useEffect(() => {
+    if (files.length > 0) {
+      fetchKnowledgeStatuses()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files])
+
+  // 订阅知识点提取进度（SSE）
+  useEffect(() => {
+    // 为每个文件创建进度订阅（只为正在提取的文件）
+    files.forEach(file => {
+      const fileId = file.file_id
+      const status = knowledgeStatuses[fileId]
+      
+      // 如果已经有连接，检查是否需要更新
+      if (eventSourceRefs.current[fileId]) {
+        // 如果状态不再是extracting，关闭连接
+        if (!status || status.status !== 'extracting') {
+          eventSourceRefs.current[fileId]?.close()
+          delete eventSourceRefs.current[fileId]
+        }
+        return
+      }
+      
+      // 只为正在提取的文件创建连接
+      if (status && status.status === 'extracting') {
+        const eventSource = new EventSource(getApiUrl(`/knowledge-extraction/${fileId}/progress`))
+        
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            setKnowledgeStatuses(prev => ({
+              ...prev,
+              [fileId]: {
+                ...prev[fileId],
+                ...data,
+                file_id: fileId
+              }
+            }))
+          } catch (err) {
+            console.error('解析知识点提取进度数据失败:', err)
+          }
+        }
+
+        eventSource.onerror = (err) => {
+          console.error(`知识点提取进度流错误 (file_id: ${fileId}):`, err)
+          eventSource.close()
+          delete eventSourceRefs.current[fileId]
+        }
+
+        eventSourceRefs.current[fileId] = eventSource
+      }
+    })
+
+    // 清理不再需要的连接
+    Object.keys(eventSourceRefs.current).forEach(fileId => {
+      const status = knowledgeStatuses[fileId]
+      const fileExists = files.some(f => f.file_id === fileId)
+      
+      // 如果文件不存在，或状态不是extracting，关闭连接
+      if (!fileExists || !status || status.status !== 'extracting') {
+        eventSourceRefs.current[fileId]?.close()
+        delete eventSourceRefs.current[fileId]
+      }
+    })
+
+    return () => {
+      // 只在组件卸载时清理所有连接
+      // 注意：这里不清理，让连接在状态变化时自然管理
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files, knowledgeStatuses])
 
   // 监听上传成功事件（通过 key 变化触发）
   useEffect(() => {
@@ -132,6 +227,31 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
     } catch (err) {
       alert(err instanceof Error ? err.message : '预览文件失败')
     }
+  }
+
+  const handleStartKnowledgeExtraction = async (fileId: string) => {
+    try {
+      setStartingKnowledgeExtractionFileId(fileId)
+      const response = await fetch(getApiUrl(`/knowledge-extraction/${fileId}/retry`), {
+        method: 'POST',
+      })
+      
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || '启动知识点提取失败')
+      }
+
+      // 刷新状态
+      await fetchKnowledgeStatuses()
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '启动知识点提取失败')
+    } finally {
+      setStartingKnowledgeExtractionFileId(null)
+    }
+  }
+
+  const handleRetryKnowledgeExtraction = async (fileId: string) => {
+    await handleStartKnowledgeExtraction(fileId)
   }
 
   const handleDelete = async (fileId: string, filename: string) => {
@@ -271,6 +391,50 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
                       </span>
                     )}
                   </div>
+                  {/* 知识点提取任务状态 */}
+                  {(() => {
+                    const status = knowledgeStatuses[file.file_id]
+                    if (!status || status.status === 'not_started') {
+                      return null
+                    }
+                    
+                    return (
+                      <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Brain className="h-4 w-4 text-indigo-500" />
+                          <span className="text-slate-600 dark:text-slate-400 font-medium">知识点提取：</span>
+                          {status.status === 'extracting' && (
+                            <>
+                              <span className="text-indigo-600 dark:text-indigo-400">
+                                {status.current}/{status.total} ({status.percentage.toFixed(1)}%)
+                              </span>
+                              {status.current_chunk && (
+                                <span className="text-slate-500 dark:text-slate-500 text-xs truncate">
+                                  - {status.current_chunk}
+                                </span>
+                              )}
+                            </>
+                          )}
+                          {status.status === 'completed' && (
+                            <span className="text-green-600 dark:text-green-400">已完成</span>
+                          )}
+                          {status.status === 'failed' && (
+                            <span className="text-red-600 dark:text-red-400">失败</span>
+                          )}
+                        </div>
+                        {status.status === 'extracting' && (
+                          <div className="mt-1">
+                            <Progress value={status.percentage} className="h-1.5" />
+                          </div>
+                        )}
+                        {status.status === 'failed' && status.message && (
+                          <p className="text-xs text-red-600 dark:text-red-400 mt-1 truncate">
+                            {status.message}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                 <motion.button
@@ -291,15 +455,29 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
                 >
                   <Layers className="h-5 w-5" />
                 </motion.button>
-                <motion.button
-                  onClick={() => setGeneratingFileId(file.file_id)}
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  className="p-2.5 text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-900/20 rounded-lg transition-all duration-200 hover:shadow-md"
-                  title="生成题目"
-                >
-                  <Sparkles className="h-5 w-5" />
-                </motion.button>
+                {(() => {
+                  const status = knowledgeStatuses[file.file_id]
+                  // 如果状态是未开始，显示知识点生成按钮
+                  if (!status || status.status === 'not_started') {
+                    return (
+                      <motion.button
+                        onClick={() => handleStartKnowledgeExtraction(file.file_id)}
+                        disabled={startingKnowledgeExtractionFileId === file.file_id}
+                        whileHover={{ scale: startingKnowledgeExtractionFileId !== file.file_id ? 1.1 : 1 }}
+                        whileTap={{ scale: startingKnowledgeExtractionFileId !== file.file_id ? 0.9 : 1 }}
+                        className="p-2.5 text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg transition-all duration-200 hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="生成知识点"
+                      >
+                        {startingKnowledgeExtractionFileId === file.file_id ? (
+                          <div className="animate-spin rounded-full h-5 w-5 border-2 border-purple-300 border-t-purple-500"></div>
+                        ) : (
+                          <Brain className="h-5 w-5" />
+                        )}
+                      </motion.button>
+                    )
+                  }
+                  return null
+                })()}
                 <motion.button
                   onClick={() => setAddingToTextbookFileId(file.file_id)}
                   whileHover={{ scale: 1.1 }}
@@ -309,6 +487,28 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
                 >
                   <Plus className="h-5 w-5" />
                 </motion.button>
+                {(() => {
+                  const status = knowledgeStatuses[file.file_id]
+                  if (status && (status.status === 'failed' || status.status === 'completed')) {
+                    return (
+                      <motion.button
+                        onClick={() => handleRetryKnowledgeExtraction(file.file_id)}
+                        disabled={retryingFileId === file.file_id}
+                        whileHover={{ scale: retryingFileId !== file.file_id ? 1.1 : 1 }}
+                        whileTap={{ scale: retryingFileId !== file.file_id ? 0.9 : 1 }}
+                        className="p-2.5 text-orange-500 hover:bg-orange-50 dark:hover:bg-orange-900/20 rounded-lg transition-all duration-200 hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="重试知识点提取"
+                      >
+                        {retryingFileId === file.file_id ? (
+                          <div className="animate-spin rounded-full h-5 w-5 border-2 border-orange-300 border-t-orange-500"></div>
+                        ) : (
+                          <RefreshCw className="h-5 w-5" />
+                        )}
+                      </motion.button>
+                    )
+                  }
+                  return null
+                })()}
                 <motion.button
                   onClick={() => handleDelete(file.file_id, file.filename)}
                   disabled={deletingId === file.file_id}
@@ -381,43 +581,6 @@ export default function FileManager({ onQuestionsGenerated }: FileManagerProps) 
         </DialogContent>
       </Dialog>
 
-      {/* 生成题目模态框 */}
-      {generatingFileId && (() => {
-        const targetFile = files.find(f => f.file_id === generatingFileId)
-        if (!targetFile) return null
-        
-        return (
-          <Dialog open={!!generatingFileId} onOpenChange={(open) => !open && setGeneratingFileId(null)}>
-            <DialogContent className="max-w-3xl max-h-[90vh] p-0">
-              <QuestionGenerator
-                file={targetFile}
-                onGenerateSuccess={(questions) => {
-                  setGeneratedQuestions(questions)
-                  setGeneratingFileId(null)
-                  if (onQuestionsGenerated) {
-                    onQuestionsGenerated(questions)
-                  }
-                }}
-                onClose={() => setGeneratingFileId(null)}
-              />
-            </DialogContent>
-          </Dialog>
-        )
-      })()}
-
-      {/* 题目管理模态框 */}
-      <Dialog open={!!generatedQuestions} onOpenChange={(open) => !open && setGeneratedQuestions(null)}>
-        <DialogContent className="max-w-6xl max-h-[90vh] p-0 bg-transparent border-none shadow-none">
-          {generatedQuestions && (
-            <QuestionManager
-              questions={generatedQuestions.questions}
-              sourceFile={generatedQuestions.source_file}
-              chapter={generatedQuestions.chapter}
-              onClose={() => setGeneratedQuestions(null)}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
 
       {/* 切片查看器 */}
       {viewingChunksFileId && (() => {

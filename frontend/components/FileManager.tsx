@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { FileText, Eye, Trash2, X, Calendar, HardDrive, Layers, BookOpen, Plus, RefreshCw, Brain } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
@@ -48,11 +48,12 @@ interface FileContent {
 }
 
 interface FileManagerProps {
+  refreshKey?: number // 当 key 变化时，触发刷新
 }
 
-export default function FileManager({}: FileManagerProps) {
+export default function FileManager({ refreshKey }: FileManagerProps) {
   const [files, setFiles] = useState<FileInfo[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false) // 默认不加载，因为默认不显示文件
   const [error, setError] = useState<string | null>(null)
   const [previewFile, setPreviewFile] = useState<FileContent | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -65,7 +66,7 @@ export default function FileManager({}: FileManagerProps) {
   const eventSourceRefs = useRef<Record<string, EventSource>>({})
 
 
-  const fetchFiles = async () => {
+  const fetchFiles = useCallback(async () => {
     try {
       setLoading(true)
       setError(null)
@@ -80,12 +81,19 @@ export default function FileManager({}: FileManagerProps) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
-    fetchFiles()
-    fetchTextbooks()
-  }, [])
+    // 只有当 refreshKey 存在时才获取文件（默认不显示）
+    if (refreshKey !== undefined) {
+      fetchFiles()
+      fetchTextbooks()
+    } else {
+      // 默认不显示文件
+      setFiles([])
+      setLoading(false)
+    }
+  }, [refreshKey, fetchFiles])
 
   // 获取所有文件的知识点提取状态
   const fetchKnowledgeStatuses = async () => {

@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { BookOpen, Plus, Edit2, Trash2, FileText, ArrowUp, ArrowDown, X } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { useRouter } from 'next/navigation'
+import { BookOpen, Plus, Edit2, Trash2, FileText } from 'lucide-react'
+import { motion } from 'framer-motion'
 import {
   Dialog,
   DialogContent,
@@ -33,20 +34,17 @@ interface FileInfo {
 }
 
 export default function TextbookManager() {
+  const router = useRouter()
   const [textbooks, setTextbooks] = useState<Textbook[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showEditDialog, setShowEditDialog] = useState(false)
-  const [showDetailDialog, setShowDetailDialog] = useState(false)
   const [editingTextbook, setEditingTextbook] = useState<Textbook | null>(null)
-  const [selectedTextbook, setSelectedTextbook] = useState<Textbook | null>(null)
-  const [allFiles, setAllFiles] = useState<FileInfo[]>([])
   const [formData, setFormData] = useState({ name: '', description: '' })
 
   useEffect(() => {
     fetchTextbooks()
-    fetchAllFiles()
   }, [])
 
   const fetchTextbooks = async () => {
@@ -66,30 +64,6 @@ export default function TextbookManager() {
     }
   }
 
-  const fetchAllFiles = async () => {
-    try {
-      const response = await fetch(getApiUrl('/files'))
-      if (response.ok) {
-        const data = await response.json()
-        setAllFiles(data)
-      }
-    } catch (err) {
-      console.error('获取文件列表失败:', err)
-    }
-  }
-
-  const fetchTextbookDetail = async (textbookId: string) => {
-    try {
-      const response = await fetch(getApiUrl(`/textbooks/${textbookId}`))
-      if (!response.ok) {
-        throw new Error('获取教材详情失败')
-      }
-      const data = await response.json()
-      setSelectedTextbook(data)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : '获取教材详情失败')
-    }
-  }
 
   const handleCreate = async () => {
     if (!formData.name.trim()) {
@@ -139,9 +113,6 @@ export default function TextbookManager() {
       setEditingTextbook(null)
       setFormData({ name: '', description: '' })
       await fetchTextbooks()
-      if (selectedTextbook?.textbook_id === editingTextbook.textbook_id) {
-        await fetchTextbookDetail(editingTextbook.textbook_id)
-      }
     } catch (err) {
       alert(err instanceof Error ? err.message : '更新教材失败')
     }
@@ -163,82 +134,11 @@ export default function TextbookManager() {
       }
 
       await fetchTextbooks()
-      if (selectedTextbook?.textbook_id === textbook.textbook_id) {
-        setShowDetailDialog(false)
-        setSelectedTextbook(null)
-      }
     } catch (err) {
       alert(err instanceof Error ? err.message : '删除教材失败')
     }
   }
 
-  const handleAddFile = async (textbookId: string, fileId: string) => {
-    try {
-      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/files`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fileId, display_order: 0 }),
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || '添加文件失败')
-      }
-
-      await fetchTextbookDetail(textbookId)
-      await fetchTextbooks()
-    } catch (err) {
-      alert(err instanceof Error ? err.message : '添加文件失败')
-    }
-  }
-
-  const handleRemoveFile = async (textbookId: string, fileId: string) => {
-    if (!confirm('确定要从教材中移除这个文件吗？')) {
-      return
-    }
-
-    try {
-      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/files/${fileId}`), {
-        method: 'DELETE',
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || '移除文件失败')
-      }
-
-      await fetchTextbookDetail(textbookId)
-      await fetchTextbooks()
-    } catch (err) {
-      alert(err instanceof Error ? err.message : '移除文件失败')
-    }
-  }
-
-  const handleMoveFile = async (textbookId: string, fileId: string, direction: 'up' | 'down') => {
-    if (!selectedTextbook?.files) return
-
-    const currentIndex = selectedTextbook.files.findIndex(f => f.file_id === fileId)
-    if (currentIndex === -1) return
-
-    const newIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1
-    if (newIndex < 0 || newIndex >= selectedTextbook.files.length) return
-
-    try {
-      const response = await fetch(getApiUrl(`/textbooks/${textbookId}/files/${fileId}/order`), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_order: newIndex }),
-      })
-
-      if (!response.ok) {
-        throw new Error('更新文件顺序失败')
-      }
-
-      await fetchTextbookDetail(textbookId)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : '更新文件顺序失败')
-    }
-  }
 
 
   const formatDate = (dateString: string): string => {
@@ -269,10 +169,8 @@ export default function TextbookManager() {
     setShowEditDialog(true)
   }
 
-  const openDetailDialog = async (textbook: Textbook) => {
-    setSelectedTextbook(textbook)
-    await fetchTextbookDetail(textbook.textbook_id)
-    setShowDetailDialog(true)
+  const handleTextbookClick = (textbook: Textbook) => {
+    router.push(`/textbooks/${textbook.textbook_id}`)
   }
 
   if (loading) {
@@ -358,7 +256,10 @@ export default function TextbookManager() {
                 <div className="p-2 bg-indigo-100 dark:bg-indigo-900/30 rounded-lg flex-shrink-0">
                   <BookOpen className="h-6 w-6 text-indigo-600 dark:text-indigo-400" />
                 </div>
-                <div className="flex-1 min-w-0" onClick={() => openDetailDialog(textbook)} style={{ cursor: 'pointer' }}>
+                <div 
+                  className="flex-1 min-w-0 cursor-pointer" 
+                  onClick={() => handleTextbookClick(textbook)}
+                >
                   <p className="font-semibold text-lg text-slate-900 dark:text-slate-100 truncate mb-1">
                     {textbook.name}
                   </p>
@@ -377,16 +278,10 @@ export default function TextbookManager() {
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <motion.button
-                    onClick={() => openDetailDialog(textbook)}
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    className="p-2.5 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-all duration-200"
-                    title="查看详情"
-                  >
-                    <FileText className="h-5 w-5" />
-                  </motion.button>
-                  <motion.button
-                    onClick={() => openEditDialog(textbook)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      openEditDialog(textbook)
+                    }}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     className="p-2.5 text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-all duration-200"
@@ -395,7 +290,10 @@ export default function TextbookManager() {
                     <Edit2 className="h-5 w-5" />
                   </motion.button>
                   <motion.button
-                    onClick={() => handleDelete(textbook)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleDelete(textbook)
+                    }}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     className="p-2.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-200"
@@ -412,13 +310,13 @@ export default function TextbookManager() {
 
       {/* 创建教材对话框 */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>新建教材</DialogTitle>
+            <DialogTitle className="text-xl">新建教材</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 mt-4">
+          <div className="space-y-5 mt-6">
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2.5">
                 教材名称 <span className="text-red-500">*</span>
               </label>
               <Input
@@ -426,20 +324,22 @@ export default function TextbookManager() {
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 placeholder="请输入教材名称"
+                className="w-full"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2.5">
                 教材描述
               </label>
               <Textarea
                 value={formData.description}
                 onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="请输入教材描述（可选）"
-                rows={3}
+                rows={4}
+                className="w-full"
               />
             </div>
-            <div className="flex justify-end gap-2 mt-6">
+            <div className="flex justify-end gap-3 mt-8 pt-4 border-t border-slate-200 dark:border-slate-700">
               <button onClick={() => setShowCreateDialog(false)} className="btn btn-secondary">
                 取消
               </button>
@@ -453,13 +353,13 @@ export default function TextbookManager() {
 
       {/* 编辑教材对话框 */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>编辑教材</DialogTitle>
+            <DialogTitle className="text-xl">编辑教材</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 mt-4">
+          <div className="space-y-5 mt-6">
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2.5">
                 教材名称 <span className="text-red-500">*</span>
               </label>
               <Input
@@ -467,20 +367,22 @@ export default function TextbookManager() {
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 placeholder="请输入教材名称"
+                className="w-full"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2.5">
                 教材描述
               </label>
               <Textarea
                 value={formData.description}
                 onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="请输入教材描述（可选）"
-                rows={3}
+                rows={4}
+                className="w-full"
               />
             </div>
-            <div className="flex justify-end gap-2 mt-6">
+            <div className="flex justify-end gap-3 mt-8 pt-4 border-t border-slate-200 dark:border-slate-700">
               <button onClick={() => setShowEditDialog(false)} className="btn btn-secondary">
                 取消
               </button>
@@ -492,118 +394,6 @@ export default function TextbookManager() {
         </DialogContent>
       </Dialog>
 
-      {/* 教材详情对话框 */}
-      <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-        <DialogContent className="max-w-5xl max-h-[85vh] flex flex-col p-0 overflow-hidden">
-          <DialogHeader className="p-5 border-b border-slate-200 dark:border-slate-700">
-            <DialogTitle>{selectedTextbook?.name}</DialogTitle>
-            {selectedTextbook?.description && (
-              <p className="text-sm text-slate-600 dark:text-slate-400 mt-2">{selectedTextbook.description}</p>
-            )}
-          </DialogHeader>
-          <div className="flex-1 overflow-auto p-5">
-            <div className="mb-4">
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-                文件列表 ({selectedTextbook?.files?.length || 0})
-              </h3>
-            </div>
-
-            {/* 已添加的文件列表 */}
-            {selectedTextbook?.files && selectedTextbook.files.length > 0 && (
-              <div className="space-y-2 mb-6">
-                {(() => {
-                  const sortedFiles = [...selectedTextbook.files].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
-                  return sortedFiles.map((file, index) => (
-                    <motion.div
-                      key={file.file_id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="card p-4 flex items-center gap-3"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-slate-900 dark:text-slate-100 truncate">{file.filename}</p>
-                        <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400 mt-1">
-                          <span>{formatFileSize(file.file_size)}</span>
-                          <span>{formatDate(file.upload_time)}</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <motion.button
-                          onClick={() => handleMoveFile(selectedTextbook.textbook_id, file.file_id, 'up')}
-                          disabled={index === 0}
-                          whileHover={{ scale: 1.1 }}
-                          whileTap={{ scale: 0.9 }}
-                          className="p-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                          title="上移"
-                        >
-                          <ArrowUp className="h-4 w-4" />
-                        </motion.button>
-                        <motion.button
-                          onClick={() => handleMoveFile(selectedTextbook.textbook_id, file.file_id, 'down')}
-                          disabled={index === sortedFiles.length - 1}
-                          whileHover={{ scale: 1.1 }}
-                          whileTap={{ scale: 0.9 }}
-                          className="p-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                          title="下移"
-                        >
-                          <ArrowDown className="h-4 w-4" />
-                        </motion.button>
-                        <motion.button
-                          onClick={() => handleRemoveFile(selectedTextbook.textbook_id, file.file_id)}
-                          whileHover={{ scale: 1.1 }}
-                          whileTap={{ scale: 0.9 }}
-                          className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                          title="移除"
-                        >
-                          <X className="h-4 w-4" />
-                        </motion.button>
-                      </div>
-                    </motion.div>
-                  ))
-                })()}
-              </div>
-            )}
-
-            {/* 可添加的文件列表 */}
-            <div>
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-4">添加文件</h3>
-              {allFiles.filter(f => !selectedTextbook?.files?.some(tf => tf.file_id === f.file_id)).length === 0 ? (
-                <p className="text-slate-600 dark:text-slate-400 text-center py-8">没有可添加的文件</p>
-              ) : (
-                <div className="space-y-2 max-h-96 overflow-y-auto">
-                  {allFiles
-                    .filter(f => !selectedTextbook?.files?.some(tf => tf.file_id === f.file_id))
-                    .sort((a, b) => new Date(b.upload_time).getTime() - new Date(a.upload_time).getTime())
-                    .map((file) => (
-                      <motion.div
-                        key={file.file_id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="card p-4 flex items-center justify-between gap-3"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-slate-900 dark:text-slate-100 truncate">{file.filename}</p>
-                          <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400 mt-1">
-                            <span>{formatFileSize(file.file_size)}</span>
-                            <span>{formatDate(file.upload_time)}</span>
-                          </div>
-                        </div>
-                        <motion.button
-                          onClick={() => handleAddFile(selectedTextbook!.textbook_id, file.file_id)}
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
-                          className="btn btn-primary btn-sm flex-shrink-0"
-                        >
-                          添加
-                        </motion.button>
-                      </motion.div>
-                    ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

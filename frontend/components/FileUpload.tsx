@@ -638,146 +638,187 @@ export default function FileUpload({ onUploadSuccess }: FileUploadProps) {
         </motion.div>
       )}
 
-      {/* 文件列表 */}
-      {fileQueue.length > 0 && (
+      {/* 文件列表 - 只显示上传中/待上传/失败的文件 */}
+      {fileQueue.filter(item => item.status !== 'success').length > 0 && (
         <div className="space-y-2 max-h-96 overflow-y-auto">
           <AnimatePresence>
-            {fileQueue.map((item) => (
-              <motion.div
-                key={item.id}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                className={`
-                  bg-white dark:bg-slate-800 rounded-lg p-4 shadow-md border
-                  ${item.status === 'success' ? 'border-green-500' : ''}
-                  ${item.status === 'error' ? 'border-red-500' : ''}
-                  ${item.status === 'uploading' ? 'border-blue-500' : ''}
-                  ${item.status === 'pending' || item.status === 'paused' ? 'border-slate-300 dark:border-slate-600' : ''}
-                `}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2">
-                      <FileText className="h-5 w-5 text-slate-500 flex-shrink-0" />
-                      <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">
-                        {item.file.name}
-                      </p>
-                      <span className="text-xs text-slate-500">
-                        {formatFileSize(item.file.size)}
-                      </span>
-                    </div>
-                    
-                    {/* 上传进度条 - 使用 Radix UI Progress 组件 */}
-                    {item.status === 'uploading' && (
-                      <div className="w-full mb-2">
-                        <Progress value={item.progress} className="h-2" />
+            {fileQueue
+              .filter(item => item.status !== 'success')
+              .map((item) => (
+                <motion.div
+                  key={item.id}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 20 }}
+                  className={`
+                    bg-white dark:bg-slate-800 rounded-lg p-4 shadow-md border
+                    ${item.status === 'error' ? 'border-red-500' : ''}
+                    ${item.status === 'uploading' ? 'border-blue-500' : ''}
+                    ${item.status === 'pending' || item.status === 'paused' ? 'border-slate-300 dark:border-slate-600' : ''}
+                  `}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-2">
+                        <FileText className="h-5 w-5 text-slate-500 flex-shrink-0" />
+                        <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">
+                          {item.file.name}
+                        </p>
+                        <span className="text-xs text-slate-500">
+                          {formatFileSize(item.file.size)}
+                        </span>
                       </div>
-                    )}
-
-                    {/* 知识提取进度 */}
-                    {item.status === 'success' && item.knowledgeExtraction && item.knowledgeExtraction.status !== 'not_started' && (
-                      <div className="w-full mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Brain className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
-                          <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                            知识图谱生成
-                          </span>
-                          {item.knowledgeExtraction.status === 'extracting' && (
-                            <Loader2 className="h-3 w-3 text-indigo-600 animate-spin" />
-                          )}
-                          {item.knowledgeExtraction.status === 'completed' && (
-                            <CheckCircle2 className="h-3 w-3 text-green-600" />
-                          )}
-                          {item.knowledgeExtraction.status === 'failed' && (
-                            <AlertCircle className="h-3 w-3 text-red-600" />
-                          )}
+                      
+                      {/* 上传进度条 - 使用 Radix UI Progress 组件 */}
+                      {item.status === 'uploading' && (
+                        <div className="w-full mb-2">
+                          <Progress value={item.progress} className="h-2" />
                         </div>
-                        {item.knowledgeExtraction.total > 0 && (
-                          <>
-                            <div className="w-full mb-2">
-                              <Progress 
-                                value={item.knowledgeExtraction.percentage} 
-                                className="h-2" 
-                              />
-                            </div>
-                            <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
-                              <span>
-                                {item.knowledgeExtraction.currentChunk && (
-                                  <span className="truncate max-w-[200px]">
-                                    {item.knowledgeExtraction.currentChunk}
-                                  </span>
-                                )}
-                                {!item.knowledgeExtraction.currentChunk && item.knowledgeExtraction.message && (
-                                  <span>{item.knowledgeExtraction.message}</span>
-                                )}
-                              </span>
-                              <span className="ml-2">
-                                {item.knowledgeExtraction.current}/{item.knowledgeExtraction.total} ({Math.round(item.knowledgeExtraction.percentage)}%)
-                              </span>
-                            </div>
-                          </>
+                      )}
+
+                      {/* 状态显示 */}
+                      <div className="flex items-center gap-2 text-xs">
+                        {item.status === 'pending' && (
+                          <span className="text-yellow-600">等待上传...</span>
                         )}
-                        {item.knowledgeExtraction.total === 0 && item.knowledgeExtraction.message && (
-                          <div className="text-xs text-slate-600 dark:text-slate-400">
-                            {item.knowledgeExtraction.message}
+                        {item.status === 'paused' && (
+                          <span className="text-yellow-600">已暂停</span>
+                        )}
+                        {item.status === 'uploading' && (
+                          <span className="text-blue-600">上传中... {Math.round(item.progress)}%</span>
+                        )}
+                        {item.status === 'error' && (
+                          <span className="text-red-600 flex items-center gap-1">
+                            <AlertCircle className="h-4 w-4" />
+                            {item.error}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 操作按钮 */}
+                    <div className="flex items-center gap-2 ml-4">
+                      {item.status === 'error' && (
+                        <button
+                          onClick={() => retryFile(item.id)}
+                          className="p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                          title="重试"
+                        >
+                          <RotateCw className="h-4 w-4" />
+                        </button>
+                      )}
+                      {(item.status === 'pending' || item.status === 'paused' || item.status === 'error') && (
+                        <button
+                          onClick={() => removeFile(item.id)}
+                          className="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                          title="移除"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+          </AnimatePresence>
+        </div>
+      )}
+
+      {/* 上传成功的文件回显 */}
+      {fileQueue.filter(item => item.status === 'success').length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="mt-8"
+        >
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-4">
+            已上传的文件
+          </h3>
+          <div className="space-y-2">
+            <AnimatePresence>
+              {fileQueue
+                .filter(item => item.status === 'success')
+                .map((item) => (
+                  <motion.div
+                    key={item.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="bg-white dark:bg-slate-800 rounded-lg p-4 shadow-sm border border-green-200 dark:border-green-800"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg flex-shrink-0">
+                            <FileText className="h-5 w-5 text-green-600 dark:text-green-400" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">
+                              {item.result?.filename || item.file.name}
+                            </p>
+                            <div className="flex items-center gap-3 mt-1">
+                              <span className="text-xs text-slate-500">
+                                {formatFileSize(item.result?.file_size || item.file.size)}
+                              </span>
+                              <span className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+                                <CheckCircle2 className="h-3 w-3" />
+                                上传成功
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 知识提取进度 */}
+                        {item.knowledgeExtraction && item.knowledgeExtraction.status !== 'not_started' && (
+                          <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+                            <div className="flex items-center gap-2 mb-2">
+                              <Brain className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                              <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                                知识图谱生成
+                              </span>
+                              {item.knowledgeExtraction.status === 'extracting' && (
+                                <Loader2 className="h-3 w-3 text-indigo-600 animate-spin" />
+                              )}
+                              {item.knowledgeExtraction.status === 'completed' && (
+                                <CheckCircle2 className="h-3 w-3 text-green-600" />
+                              )}
+                              {item.knowledgeExtraction.status === 'failed' && (
+                                <AlertCircle className="h-3 w-3 text-red-600" />
+                              )}
+                            </div>
+                            {item.knowledgeExtraction.total > 0 && (
+                              <>
+                                <div className="w-full mb-2">
+                                  <Progress 
+                                    value={item.knowledgeExtraction.percentage} 
+                                    className="h-2" 
+                                  />
+                                </div>
+                                <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
+                                  <span className="truncate max-w-[300px]">
+                                    {item.knowledgeExtraction.currentChunk || item.knowledgeExtraction.message || '处理中...'}
+                                  </span>
+                                  <span className="ml-2 flex-shrink-0">
+                                    {item.knowledgeExtraction.current}/{item.knowledgeExtraction.total} ({Math.round(item.knowledgeExtraction.percentage)}%)
+                                  </span>
+                                </div>
+                              </>
+                            )}
+                            {item.knowledgeExtraction.total === 0 && item.knowledgeExtraction.message && (
+                              <div className="text-xs text-slate-600 dark:text-slate-400">
+                                {item.knowledgeExtraction.message}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
-                    )}
-
-                    {/* 状态显示 */}
-                    <div className="flex items-center gap-2 text-xs">
-                      {item.status === 'pending' && (
-                        <span className="text-yellow-600">等待上传...</span>
-                      )}
-                      {item.status === 'paused' && (
-                        <span className="text-yellow-600">已暂停</span>
-                      )}
-                      {item.status === 'uploading' && (
-                        <span className="text-blue-600">上传中... {Math.round(item.progress)}%</span>
-                      )}
-                      {item.status === 'success' && (
-                        <span className="text-green-600 flex items-center gap-1">
-                          <CheckCircle2 className="h-4 w-4" />
-                          上传成功
-                        </span>
-                      )}
-                      {item.status === 'error' && (
-                        <span className="text-red-600 flex items-center gap-1">
-                          <AlertCircle className="h-4 w-4" />
-                          {item.error}
-                        </span>
-                      )}
                     </div>
-                  </div>
-
-                  {/* 操作按钮 */}
-                  <div className="flex items-center gap-2 ml-4">
-                    {item.status === 'error' && (
-                      <button
-                        onClick={() => retryFile(item.id)}
-                        className="p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
-                        title="重试"
-                      >
-                        <RotateCw className="h-4 w-4" />
-                      </button>
-                    )}
-                    {(item.status === 'pending' || item.status === 'paused' || item.status === 'error') && (
-                      <button
-                        onClick={() => removeFile(item.id)}
-                        className="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                        title="移除"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
+                  </motion.div>
+                ))}
+            </AnimatePresence>
+          </div>
+        </motion.div>
       )}
     </div>
   )

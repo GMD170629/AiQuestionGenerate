@@ -37,10 +37,14 @@ interface Task {
   generation_plan?: any
 }
 
+// 所有可用的题型
+const QUESTION_TYPES = ['单选题', '多选题', '判断题', '填空题', '简答题', '编程题'] as const
+
 export default function TasksPage() {
   const [textbooks, setTextbooks] = useState<Textbook[]>([])
   const [selectedTextbookId, setSelectedTextbookId] = useState<string>('')
   const [selectedMode, setSelectedMode] = useState<string>('课后习题')
+  const [selectedQuestionTypes, setSelectedQuestionTypes] = useState<string[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -134,7 +138,8 @@ export default function TasksPage() {
       
       console.log('[任务执行] 开始执行任务', {
         textbook_id: selectedTextbookId,
-        mode: selectedMode
+        mode: selectedMode,
+        question_types: selectedQuestionTypes.length > 0 ? selectedQuestionTypes : undefined
       })
       
       const response = await fetch(getApiUrl('/tasks/create-and-execute'), {
@@ -142,7 +147,8 @@ export default function TasksPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           textbook_id: selectedTextbookId,
-          mode: selectedMode
+          mode: selectedMode,
+          question_types: selectedQuestionTypes.length > 0 ? selectedQuestionTypes : undefined
         }),
       })
 
@@ -181,6 +187,7 @@ export default function TasksPage() {
       
       // 清空选择
       setSelectedTextbookId('')
+      setSelectedQuestionTypes([])
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '执行任务失败'
       console.error('[任务执行] 异常:', err)
@@ -318,6 +325,47 @@ export default function TasksPage() {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                题型选择（默认所有题型）
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {QUESTION_TYPES.map((type) => {
+                  const isSelected = selectedQuestionTypes.includes(type)
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => {
+                        if (isSelected) {
+                          setSelectedQuestionTypes(selectedQuestionTypes.filter(t => t !== type))
+                        } else {
+                          setSelectedQuestionTypes([...selectedQuestionTypes, type])
+                        }
+                      }}
+                      className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  )
+                })}
+              </div>
+              {selectedQuestionTypes.length > 0 && (
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  已选择 {selectedQuestionTypes.length} 种题型：{selectedQuestionTypes.join('、')}
+                </p>
+              )}
+              {selectedQuestionTypes.length === 0 && (
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  未选择任何题型，将使用所有题型
+                </p>
+              )}
             </div>
             
             <div className="flex justify-end">

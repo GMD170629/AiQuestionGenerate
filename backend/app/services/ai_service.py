@@ -1168,6 +1168,7 @@ class OpenRouterClient:
         file_chunks_info: List[Dict[str, Any]],
         existing_type_distribution: Optional[Dict[str, int]] = None,
         mode: str = "课后习题",
+        allowed_question_types: Optional[List[str]] = None,
         retry_count: int = 0
     ) -> List[ChunkGenerationPlan]:
         """
@@ -1177,6 +1178,8 @@ class OpenRouterClient:
             textbook_name: 教材名称
             file_chunks_info: 单个文件的切片信息列表
             existing_type_distribution: 已规划文件的题型分布（用于参考）
+            mode: 出题模式（"课后习题" 或 "提高习题"）
+            allowed_question_types: 允许的题型列表（可选），如果为 None 则使用所有题型
             retry_count: 当前重试次数
             
         Returns:
@@ -1228,6 +1231,18 @@ class OpenRouterClient:
 
 **注意**：请参考上述题型分布，确保当前文件的规划与整体分布保持协调，避免某些题型过多或过少。"""
         
+        # 如果有指定的题型限制，添加到提示词中
+        allowed_types_text = ""
+        if allowed_question_types and len(allowed_question_types) > 0:
+            allowed_types_text = f"""
+
+## 题型限制：
+
+**重要**：本次规划只能使用以下题型，严禁使用其他题型：
+{', '.join(allowed_question_types)}
+
+请确保所有切片的规划中，question_types 和 type_distribution 都只包含上述允许的题型。"""
+        
         # 使用 PromptManager 构建用户提示词
         try:
             # 构建基础用户提示词
@@ -1237,21 +1252,19 @@ class OpenRouterClient:
                 chunk_count=len(chunks_catalog)
             )
             
-            # 如果有已规划的题型分布，追加到提示词中
-            if existing_distribution_text:
-                mode_text = "提高习题" if mode == "提高习题" else "课后习题"
-                user_prompt = f"""{base_user_prompt}
+            # 构建完整的用户提示词
+            mode_text = "提高习题" if mode == "提高习题" else "课后习题"
+            user_prompt = f"""{base_user_prompt}
 
 ## 出题模式：
 **模式**：{mode_text}
-
 {existing_distribution_text}
+{allowed_types_text}
 
 **额外要求**：
 - 严格按照{mode_text}模式的特点和要求进行规划
-- 与已规划文件的题型分布保持协调（如果提供了已规划分布）"""
-            else:
-                user_prompt = base_user_prompt
+- 与已规划文件的题型分布保持协调（如果提供了已规划分布）
+- {f'只能使用指定的题型：{", ".join(allowed_question_types)}' if allowed_question_types and len(allowed_question_types) > 0 else '可以使用所有题型'}"""
         except Exception as e:
             logger.error(f"[规划任务] 构建任务规划用户提示词失败: {e}")
             raise ValueError(f"构建任务规划用户提示词失败: {e}")
@@ -1480,6 +1493,7 @@ class OpenRouterClient:
         textbook_name: str,
         chunks_info: List[Dict[str, Any]],
         mode: str = "课后习题",
+        allowed_question_types: Optional[List[str]] = None,
         retry_count: int = 0
     ) -> TextbookGenerationPlan:
         """
@@ -1496,6 +1510,7 @@ class OpenRouterClient:
                 - chapter_name: 章节名称 (str)
                 - content_summary: 内容摘要 (str)
             mode: 出题模式（"课后习题" 或 "提高习题"）
+            allowed_question_types: 允许的题型列表（可选），如果为 None 则使用所有题型
             retry_count: 当前重试次数（仅用于整体重试，单文件重试在 _plan_single_file 中处理）
             
         Returns:
@@ -1551,6 +1566,7 @@ class OpenRouterClient:
                 file_chunks_info=file_chunks_info,
                 existing_type_distribution=accumulated_type_distribution if accumulated_type_distribution else None,
                 mode=mode,
+                allowed_question_types=allowed_question_types,
                 retry_count=0  # 单文件重试在 _plan_single_file 内部处理
             )
             
@@ -1669,7 +1685,7 @@ class OpenRouterClient:
                             retry_delay = get_retry_delay(self.model, retry_count)
                             await asyncio.sleep(retry_delay)
                             return await self.plan_generation_tasks(
-                                textbook_name, chunks_info, retry_count + 1
+                                textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
                             )
                         else:
                             try:
@@ -1741,7 +1757,7 @@ class OpenRouterClient:
                         retry_delay = get_retry_delay(self.model, retry_count)
                         await asyncio.sleep(retry_delay)
                         return await self.plan_generation_tasks(
-                            textbook_name, chunks_info, retry_count + 1
+                            textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
                         )
                     else:
                         try:
@@ -1759,7 +1775,7 @@ class OpenRouterClient:
                 retry_delay = get_retry_delay(self.model, retry_count)
                 await asyncio.sleep(retry_delay)
                 return await self.plan_generation_tasks(
-                    textbook_name, chunks_info, retry_count + 1
+                    textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
                 )
             logger.error(f"[规划任务] 请求超时，已达最大重试次数 - 模型: {self.model}")
             raise ValueError(f"规划任务请求超时（已重试{MAX_RETRIES}次，模型: {self.model}）")
@@ -1770,7 +1786,7 @@ class OpenRouterClient:
                 retry_delay = get_retry_delay(self.model, retry_count)
                 await asyncio.sleep(retry_delay)
                 return await self.plan_generation_tasks(
-                    textbook_name, chunks_info, retry_count + 1
+                    textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
                 )
             error_msg = f"OpenRouter API 请求失败: HTTP {e.response.status_code} (模型: {self.model})"
             if e.response.text:
@@ -1784,7 +1800,7 @@ class OpenRouterClient:
                 retry_delay = get_retry_delay(self.model, retry_count)
                 await asyncio.sleep(retry_delay)
                 return await self.plan_generation_tasks(
-                    textbook_name, chunks_info, retry_count + 1
+                    textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
                 )
             try:
                 error_msg = repr(e) if hasattr(e, '__repr__') else "网络请求错误"

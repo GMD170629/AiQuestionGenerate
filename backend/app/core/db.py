@@ -168,6 +168,13 @@ class Database:
                         cursor.execute("ALTER TABLE questions ADD COLUMN file_path TEXT")
                     except sqlite3.OperationalError:
                         pass
+                
+                # 添加 task_id 列（如果不存在）- 用于关联生成任务
+                if 'task_id' not in columns:
+                    try:
+                        cursor.execute("ALTER TABLE questions ADD COLUMN task_id TEXT")
+                    except sqlite3.OperationalError:
+                        pass
             
             # 教材表（存储教材信息）
             cursor.execute("""
@@ -339,6 +346,9 @@ class Database:
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_questions_textbook_id ON questions(textbook_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_questions_task_id ON questions(task_id)
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_chapters_file_id ON chapters(file_id)
@@ -672,7 +682,8 @@ class Database:
     def store_question(self, file_id: str, question: Dict[str, Any], 
                       source_file: Optional[str] = None,
                       textbook_id: Optional[str] = None,
-                      file_path: Optional[str] = None):
+                      file_path: Optional[str] = None,
+                      task_id: Optional[str] = None):
         """
         存储单个题目
         
@@ -682,6 +693,7 @@ class Database:
             source_file: 来源文件名（可选）
             textbook_id: 教材 ID（可选）
             file_path: 文件路径（可选）
+            task_id: 任务 ID（可选）- 用于关联生成任务
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -702,8 +714,8 @@ class Database:
                 INSERT INTO questions 
                 (file_id, question_type, stem, options_json, answer, explain, 
                  code_snippet, test_cases_json, difficulty, chapter, source_file, 
-                 textbook_id, file_path, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 textbook_id, file_path, task_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 file_id,
                 question.get("type"),
@@ -718,6 +730,7 @@ class Database:
                 source_file,
                 textbook_id,
                 file_path,
+                task_id,
                 created_at
             ))
             conn.commit()
@@ -725,7 +738,8 @@ class Database:
     def store_questions(self, file_id: str, questions: List[Dict[str, Any]], 
                        source_file: Optional[str] = None,
                        textbook_id: Optional[str] = None,
-                       file_path: Optional[str] = None):
+                       file_path: Optional[str] = None,
+                       task_id: Optional[str] = None):
         """
         批量存储题目
         
@@ -735,24 +749,27 @@ class Database:
             source_file: 来源文件名（可选）
             textbook_id: 教材 ID（可选）
             file_path: 文件路径（可选）
+            task_id: 任务 ID（可选）- 用于关联生成任务
         """
         for question in questions:
-            self.store_question(file_id, question, source_file, textbook_id, file_path)
+            self.store_question(file_id, question, source_file, textbook_id, file_path, task_id)
     
     def get_all_questions(self, file_id: Optional[str] = None, 
                           question_type: Optional[str] = None,
                           textbook_id: Optional[str] = None,
                           difficulty: Optional[str] = None,
+                          task_id: Optional[str] = None,
                           limit: Optional[int] = None,
                           offset: int = 0) -> List[Dict[str, Any]]:
         """
-        获取题目列表（支持按文件、题型、教材和难度筛选）
+        获取题目列表（支持按文件、题型、教材、难度和任务筛选）
         
         Args:
             file_id: 文件 ID（可选，如果提供则只返回该文件的题目）
             question_type: 题型（可选，如果提供则只返回该题型的题目）
             textbook_id: 教材 ID（可选，如果提供则只返回该教材的题目）
             difficulty: 难度（可选，如果提供则只返回该难度的题目）
+            task_id: 任务 ID（可选，如果提供则只返回该任务生成的题目）
             limit: 限制返回数量（可选）
             offset: 偏移量（用于分页）
             
@@ -782,6 +799,10 @@ class Database:
                 conditions.append("q.difficulty = ?")
                 params.append(difficulty)
             
+            if task_id:
+                conditions.append("q.task_id = ?")
+                params.append(task_id)
+            
             where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
             
             # 构建查询语句
@@ -799,6 +820,7 @@ class Database:
                     q.difficulty,
                     q.chapter,
                     q.source_file,
+                    q.task_id,
                     q.created_at,
                     f.filename
                 FROM questions q
@@ -827,6 +849,7 @@ class Database:
                     "difficulty": row["difficulty"],
                     "chapter": row["chapter"],
                     "source_file": row["source_file"] or row["filename"],
+                    "task_id": row["task_id"],
                     "created_at": row["created_at"],
                 }
                 
@@ -851,15 +874,17 @@ class Database:
     def get_question_count(self, file_id: Optional[str] = None, 
                            question_type: Optional[str] = None,
                            textbook_id: Optional[str] = None,
-                           difficulty: Optional[str] = None) -> int:
+                           difficulty: Optional[str] = None,
+                           task_id: Optional[str] = None) -> int:
         """
-        获取题目总数（支持按文件、题型、教材和难度筛选）
+        获取题目总数（支持按文件、题型、教材、难度和任务筛选）
         
         Args:
             file_id: 文件 ID（可选）
             question_type: 题型（可选）
             textbook_id: 教材 ID（可选）
             difficulty: 难度（可选）
+            task_id: 任务 ID（可选）
             
         Returns:
             题目总数
@@ -886,11 +911,32 @@ class Database:
                 conditions.append("difficulty = ?")
                 params.append(difficulty)
             
+            if task_id:
+                conditions.append("task_id = ?")
+                params.append(task_id)
+            
             where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
             
             cursor.execute(f"SELECT COUNT(*) as count FROM questions{where_clause}", params)
             row = cursor.fetchone()
             return row["count"] if row else 0
+    
+    def delete_questions_by_task(self, task_id: str) -> int:
+        """
+        删除指定任务生成的所有题目
+        
+        Args:
+            task_id: 任务 ID
+            
+        Returns:
+            删除的题目数量
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM questions WHERE task_id = ?", (task_id,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            return deleted_count
     
     def get_question_statistics(self) -> Dict[str, Any]:
         """

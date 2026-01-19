@@ -274,11 +274,22 @@ async def process_full_textbook_task(task_id: str):
                 # 获取任务的模式
                 task_mode = task.get("mode", "课后习题")
                 
+                # 获取题型限制（从 task_settings 中读取，如果存在）
+                allowed_question_types = None
+                task_settings = task.get("task_settings")
+                if task_settings and isinstance(task_settings, dict):
+                    allowed_question_types = task_settings.get("question_types")
+                # 如果 task_settings 中没有，尝试从请求中读取（向后兼容）
+                # 注意：在 create-and-execute 接口中，question_types 会直接传递
+                
+                logger.info(f"[任务] 规划参数 - 模式: {task_mode}, 题型限制: {allowed_question_types}")
+                
                 # 调用规划任务
                 generation_plan = await client.plan_generation_tasks(
                     textbook_name=textbook_name,
                     chunks_info=all_chunks_info,
-                    mode=task_mode
+                    mode=task_mode,
+                    allowed_question_types=allowed_question_types
                 )
                 
                 # 保存规划到任务
@@ -464,7 +475,8 @@ async def process_full_textbook_task(task_id: str):
                                             question=question,
                                             source_file=filename,
                                             textbook_id=textbook_id,
-                                            file_path=file_path
+                                            file_path=file_path,
+                                            task_id=task_id
                                         )
                                         file_questions_count += 1
                                         total_questions_generated += 1

@@ -9,70 +9,8 @@ from string import Template
 import json
 
 
-# 题型提示词（硬编码常量，不存储在数据库中）
-QUESTION_TYPE_PROMPTS = {
-    "单选题": """## 单选题生成要求：
-1. **必须提供恰好 4 个选项**
-2. **答案格式**：单个字母（如 "A"）""",
-
-    "多选题": """## 多选题生成要求：
-
-1. **必须提供恰好 4 个选项**
-2. 题干应该明确提示"多选"或"选择所有正确的选项"
-3. 正确答案：多个字母，用逗号分隔（如 "A,B"、"A,B,C" 或 "A,B,C,D"）""",
-
-    "判断题": """## 判断题生成要求：
-
-1. 错误陈述的错误点必须明确，不能是细微的表述差异
-2. 确保"正确"和"错误"两种答案都有合理的分布""",
-
-    "填空题": """## 填空题生成要求：
-
-1.多空题用【1】【2】编号标注
-2. 题干应该提供足够的上下文，确保答案唯一：
-3. **答案格式**：
-   - 单空：直接填写答案（如 "死锁"）
-   - 多空：用 | 分隔（如 "互斥条件|请求和保持条件|不剥夺条件|环路等待条件"）""",
-
-    "简答题": """## 简答题生成要求：
-
-1. 题目应该测试对知识点的综合理解和应用能力
-2. 答案必须分点给出，逻辑清晰""",
-
-    "编程题": """## 编程题生成要求（Online Judge 风格）：
-
-**重要：编程题必须生成为 Online Judge 风格的完整题目，包含完整的题目描述、输入输出格式说明和测试用例。**
-
-**关键提醒：**
-- **answer 字段（必需）**：必须包含完整的解决方案代码，不能为空
-- **explain 字段（必需）**：必须包含详细的解析说明，不能为空
-- **test_cases 字段（必需）**：如果没有提供 test_cases 字段，或 test_cases 中缺少 input_cases 或 output_cases，题目生成将失败
-- **测试用例数量**：至少需要提供1个测试用例（input_cases 和 output_cases 各至少1个）
-- 题目应该是一个完整的、可以提交到 Online Judge 平台的问题"""
-}
-
-# Few-Shot 示例（硬编码常量，不存储在数据库中）
-FEW_SHOT_EXAMPLE = """生成的题目示例：
-
-```json
-[
-  {{
-    "type": "单选题|多选题|判断题|填空题|简答题|编程题",
-    "difficulty": "简单|中等|困难",
-    "stem": "题干（中高难度题目必须包含具体的场景描述、参数、或代码上下文）",
-    "options": ["A", "B", "C", "D"], // 仅选择题需要
-    "answer": "答案内容",
-    "explain": "详细解析（需包含推导逻辑，不仅是复述，字数20-50）",
-    "code_snippet": "代码背景/挖空片段", // 可选
-    "test_cases": {{ // 仅编程题需要，其他题目不要生成
-      "input_description": "输入说明",
-      "output_description": "输出说明",
-      "input_cases": ["用例1", "用例2"],
-      "output_cases": ["结果1", "结果2"]
-    }}
-  }}
-]
-```"""
+# 题型列表常量
+QUESTION_TYPES = ["单选题", "多选题", "判断题", "填空题", "简答题", "编程题"]
 
 
 class PromptManager:
@@ -100,7 +38,7 @@ class PromptManager:
     @staticmethod
     def get_question_type_prompt(question_type: str) -> Optional[str]:
         """
-        获取指定题型的提示词
+        获取指定题型的提示词（从数据库读取）
         
         Args:
             question_type: 题型名称（如"单选题"、"多选题"等）
@@ -108,27 +46,51 @@ class PromptManager:
         Returns:
             题型提示词字符串，如果不存在则返回 None
         """
-        return QUESTION_TYPE_PROMPTS.get(question_type)
+        try:
+            from app.core.db import db
+            prompt_data = db.get_prompt_by_function("question_type", "requirement", question_type)
+            if prompt_data:
+                return prompt_data["content"]
+        except Exception as e:
+            print(f"从数据库读取题型提示词失败: {e}")
+        return None
     
     @staticmethod
     def get_all_question_type_prompts() -> Dict[str, str]:
         """
-        获取所有题型提示词
+        获取所有题型提示词（从数据库读取）
         
         Returns:
             题型提示词字典
         """
-        return QUESTION_TYPE_PROMPTS.copy()
+        result = {}
+        try:
+            from app.core.db import db
+            for q_type in QUESTION_TYPES:
+                prompt_data = db.get_prompt_by_function("question_type", "requirement", q_type)
+                if prompt_data:
+                    result[q_type] = prompt_data["content"]
+        except Exception as e:
+            print(f"从数据库读取题型提示词失败: {e}")
+        return result
     
     @staticmethod
     def get_few_shot_example() -> str:
         """
-        获取 Few-Shot 示例
+        获取 Few-Shot 示例（从数据库读取）
         
         Returns:
             Few-Shot 示例字符串
         """
-        return FEW_SHOT_EXAMPLE
+        try:
+            from app.core.db import db
+            prompt_data = db.get_prompt_by_function("few_shot", "example")
+            if prompt_data:
+                return prompt_data["content"]
+        except Exception as e:
+            print(f"从数据库读取 Few-Shot 示例失败: {e}")
+        
+        raise ValueError("无法从数据库获取 Few-Shot 示例，请确保已初始化提示词")
     
     @staticmethod
     def build_system_prompt(include_type_requirements: bool = True, mode: Optional[str] = None) -> str:
@@ -151,10 +113,12 @@ class PromptManager:
                 content = prompt_data["content"]
                 # 如果需要添加题型要求
                 if include_type_requirements:
+                    # 从数据库读取所有题型提示词
+                    question_type_prompts = PromptManager.get_all_question_type_prompts()
                     type_requirements_parts = []
-                    for q_type in ["单选题", "多选题", "判断题", "填空题", "简答题", "编程题"]:
-                        if q_type in QUESTION_TYPE_PROMPTS:
-                            type_requirements_parts.append(QUESTION_TYPE_PROMPTS[q_type])
+                    for q_type in QUESTION_TYPES:
+                        if q_type in question_type_prompts:
+                            type_requirements_parts.append(question_type_prompts[q_type])
                     type_requirements = "\n\n".join(type_requirements_parts)
                     if type_requirements:
                         content += f"\n\n## 题型要求说明：\n以下是各题型的通用生成要求，请严格遵循：\n\n{type_requirements}"

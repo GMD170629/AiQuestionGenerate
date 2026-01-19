@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, Clock, Loader2, CheckCircle2, XCircle, FileText, Pause, PlayCircle, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Clock, Loader2, CheckCircle2, XCircle, FileText, Pause, PlayCircle, X, Trash2 } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
 import { useTaskStream } from '@/hooks/useTaskStream'
 import { getApiUrl } from '@/lib/api'
@@ -124,6 +124,38 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
       }
     } catch (err) {
       alert(err instanceof Error ? err.message : '取消任务失败')
+    } finally {
+      setIsOperating(false)
+    }
+  }
+  
+  // 删除任务生成的题目
+  const handleDeleteQuestions = async () => {
+    if (isOperating) return
+    
+    if (!confirm('确定要删除此任务生成的所有题目吗？此操作不可恢复。')) {
+      return
+    }
+    
+    try {
+      setIsOperating(true)
+      const response = await fetch(getApiUrl(`/tasks/${task.task_id}/questions`), {
+        method: 'DELETE',
+      })
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.detail || '删除题目失败')
+      }
+      
+      const result = await response.json()
+      alert(`已成功删除 ${result.deleted_count} 道题目`)
+      
+      if (onTaskUpdate) {
+        onTaskUpdate()
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '删除题目失败')
     } finally {
       setIsOperating(false)
     }
@@ -271,6 +303,23 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
                   </button>
                 )}
               </div>
+            )}
+            
+            {/* 已完成任务的删除题目按钮 */}
+            {task.status === 'COMPLETED' && (
+              <button
+                onClick={handleDeleteQuestions}
+                disabled={isOperating}
+                className="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                title="删除此任务生成的所有题目"
+              >
+                {isOperating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+                <span className="text-xs">删除题目</span>
+              </button>
             )}
             
             {/* 日志查看按钮 */}

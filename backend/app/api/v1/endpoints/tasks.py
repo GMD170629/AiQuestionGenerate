@@ -492,6 +492,51 @@ async def cancel_task(task_id: str):
         raise HTTPException(status_code=500, detail=f"取消任务失败: {error_msg}")
 
 
+@router.delete("/{task_id}/questions")
+async def delete_task_questions(task_id: str):
+    """
+    删除任务生成的所有题目
+    
+    Args:
+        task_id: 任务 ID
+        
+    Returns:
+        删除结果，包含删除的题目数量
+    """
+    try:
+        # 检查任务是否存在
+        task = db.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        
+        # 检查任务状态，只有已完成的任务才能删除题目
+        current_status = task.get("status")
+        if current_status != "COMPLETED":
+            raise HTTPException(
+                status_code=400,
+                detail=f"只能删除已完成任务的题目，当前任务状态为 {current_status}"
+            )
+        
+        # 删除任务生成的所有题目
+        deleted_count = db.delete_questions_by_task(task_id)
+        
+        logger.info(f"[删除题目] 任务 {task_id} 的题目已删除，共删除 {deleted_count} 道题目")
+        
+        return JSONResponse(content={
+            "message": f"已删除 {deleted_count} 道题目",
+            "task_id": task_id,
+            "deleted_count": deleted_count
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            error_msg = repr(e) if hasattr(e, '__repr__') else "删除题目失败"
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            error_msg = "删除题目失败"
+        raise HTTPException(status_code=500, detail=f"删除题目失败: {error_msg}")
+
+
 @router.post("/generate-book")
 async def generate_book(
     request: TextbookGenerationRequest
@@ -649,7 +694,8 @@ async def generate_book(
         
         # 4. 调用 AI 进行规划
         mode = request.mode or "课后习题"
-        logger.info(f"[生成规划] 步骤4: 调用 AI 进行规划 - 切片数: {len(all_chunks_info)}, 模式: {mode}")
+        allowed_question_types = request.question_types if request.question_types else None
+        logger.info(f"[生成规划] 步骤4: 调用 AI 进行规划 - 切片数: {len(all_chunks_info)}, 模式: {mode}, 题型限制: {allowed_question_types}")
         try:
             from app.services.ai_service import OpenRouterClient
             logger.info(f"[生成规划] 导入 OpenRouterClient 成功")
@@ -666,7 +712,8 @@ async def generate_book(
             generation_plan = await client.plan_generation_tasks(
                 textbook_name=textbook_name,
                 chunks_info=all_chunks_info,
-                mode=mode
+                mode=mode,
+                allowed_question_types=allowed_question_types
             )
             
             logger.info(f"[生成规划] AI 规划完成 - 总题目数: {generation_plan.total_questions}, 题型分布: {generation_plan.type_distribution}")
@@ -899,14 +946,20 @@ async def create_and_execute_task(
         # 3. 创建任务（状态为 PLANNING，规划将在后台任务中进行）
         task_id = str(uuid.uuid4())
         mode = request.mode or "课后习题"
-        logger.info(f"[创建并执行] 创建任务 - task_id: {task_id}, mode: {mode}, total_files: {total_files}")
+        
+        # 合并题型信息到 task_settings 中
+        task_settings = request.task_settings or {}
+        if request.question_types:
+            task_settings = {**task_settings, "question_types": request.question_types}
+        
+        logger.info(f"[创建并执行] 创建任务 - task_id: {task_id}, mode: {mode}, total_files: {total_files}, 题型限制: {request.question_types}")
         
         success = db.create_task(
             task_id=task_id,
             textbook_id=request.textbook_id,
             total_files=total_files,
             mode=mode,
-            task_settings=request.task_settings
+            task_settings=task_settings if task_settings else None
         )
         
         if not success:
@@ -1189,10 +1242,12 @@ async def generate_and_execute_task(
             client = OpenRouterClient()
             logger.info(f"[规划并执行] OpenRouterClient 初始化完成")
             
+            allowed_question_types = request.question_types if request.question_types else None
             generation_plan = await client.plan_generation_tasks(
                 textbook_name=textbook_name,
                 chunks_info=all_chunks_info,
-                mode=mode
+                mode=mode,
+                allowed_question_types=allowed_question_types
             )
             
             logger.info(f"[规划并执行] AI 规划完成 - 总题目数: {generation_plan.total_questions}, 题型分布: {generation_plan.type_distribution}")

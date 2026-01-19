@@ -6,6 +6,75 @@ import uuid
 from typing import Dict, Any, List
 from datetime import datetime
 
+# ============================================================
+# 题型提示词（各题型的生成要求）
+# ============================================================
+
+QUESTION_TYPE_PROMPT_SINGLE_CHOICE = """## 单选题生成要求：
+1. **必须提供恰好 4 个选项**
+2. **答案格式**：单个字母（如 "A"）"""
+
+QUESTION_TYPE_PROMPT_MULTIPLE_CHOICE = """## 多选题生成要求：
+
+1. **必须提供恰好 4 个选项**
+2. 题干应该明确提示"多选"或"选择所有正确的选项"
+3. 正确答案：多个字母，用逗号分隔（如 "A,B"、"A,B,C" 或 "A,B,C,D"）"""
+
+QUESTION_TYPE_PROMPT_TRUE_FALSE = """## 判断题生成要求：
+
+1. 错误陈述的错误点必须明确，不能是细微的表述差异
+2. 确保"正确"和"错误"两种答案都有合理的分布"""
+
+QUESTION_TYPE_PROMPT_FILL_BLANK = """## 填空题生成要求：
+
+1.多空题用【1】【2】编号标注
+2. 题干应该提供足够的上下文，确保答案唯一：
+3. **答案格式**：
+   - 单空：直接填写答案（如 "死锁"）
+   - 多空：用 | 分隔（如 "互斥条件|请求和保持条件|不剥夺条件|环路等待条件"）"""
+
+QUESTION_TYPE_PROMPT_SHORT_ANSWER = """## 简答题生成要求：
+
+1. 题目应该测试对知识点的综合理解和应用能力
+2. 答案必须分点给出，逻辑清晰"""
+
+QUESTION_TYPE_PROMPT_PROGRAMMING = """## 编程题生成要求（Online Judge 风格）：
+
+**重要：编程题必须生成为 Online Judge 风格的完整题目，包含完整的题目描述、输入输出格式说明和测试用例。**
+
+**关键提醒：**
+- **answer 字段（必需）**：必须包含完整的解决方案代码，不能为空
+- **explain 字段（必需）**：必须包含详细的解析说明，不能为空
+- **test_cases 字段（必需）**：如果没有提供 test_cases 字段，或 test_cases 中缺少 input_cases 或 output_cases，题目生成将失败
+- **测试用例数量**：至少需要提供1个测试用例（input_cases 和 output_cases 各至少1个）
+- 题目应该是一个完整的、可以提交到 Online Judge 平台的问题"""
+
+# ============================================================
+# Few-Shot 示例
+# ============================================================
+
+FEW_SHOT_EXAMPLE_PROMPT = """生成的题目示例：
+
+```json
+[
+  {{
+    "type": "单选题|多选题|判断题|填空题|简答题|编程题",
+    "difficulty": "简单|中等|困难",
+    "stem": "题干（中高难度题目必须包含具体的场景描述、参数、或代码上下文）",
+    "options": ["A", "B", "C", "D"], // 仅选择题需要
+    "answer": "答案内容",
+    "explain": "详细解析（需包含推导逻辑，不仅是复述，字数20-50）",
+    "code_snippet": "代码背景/挖空片段", // 可选
+    "test_cases": {{ // 仅编程题需要，其他题目不要生成
+      "input_description": "输入说明",
+      "output_description": "输出说明",
+      "input_cases": ["用例1", "用例2"],
+      "output_cases": ["结果1", "结果2"]
+    }}
+  }}
+]
+```"""
+
 # 知识点提取 - 系统提示词
 KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT = """你是一位资深的计算机科学教育专家，专门从事计算机教材的知识点分析与提取工作。你的任务是分析计算机科学相关教材的内容，提取知识点的语义信息，确保生成的知识节点紧密围绕教材主题，符合计算机科学学科特点。
 
@@ -248,10 +317,10 @@ TASK_PLANNING_SYSTEM_PROMPT = """你是一个专业的计算机教材习题规�
    - 编程题：10-20%
 
 3. **题目数量分配**：
-   - 每个切片根据内容深度分配 1-10 题
+   - 每个切片根据内容深度分配 1-5 题
    - 基础概念切片：1-2 题
    - 中等深度切片：2-4 题
-   - 深度内容切片：4-6 题
+   - 深度内容切片：4-5 题
 
 4. **题型选择原则**：
    - 根据切片内容特点选择合适的题型
@@ -573,6 +642,84 @@ def get_default_prompts() -> List[Dict[str, Any]]:
             }
         },
         "description": "全书生成任务规划的用户提示词模板"
+    })
+    
+    # ============================================================
+    # 题型提示词（各题型的生成要求）
+    # ============================================================
+    
+    # 8. 单选题提示词
+    prompts.append({
+        "function_type": "question_type",
+        "prompt_type": "requirement",
+        "mode": "单选题",
+        "content": QUESTION_TYPE_PROMPT_SINGLE_CHOICE,
+        "parameters": {},
+        "description": "单选题的生成要求"
+    })
+    
+    # 9. 多选题提示词
+    prompts.append({
+        "function_type": "question_type",
+        "prompt_type": "requirement",
+        "mode": "多选题",
+        "content": QUESTION_TYPE_PROMPT_MULTIPLE_CHOICE,
+        "parameters": {},
+        "description": "多选题的生成要求"
+    })
+    
+    # 10. 判断题提示词
+    prompts.append({
+        "function_type": "question_type",
+        "prompt_type": "requirement",
+        "mode": "判断题",
+        "content": QUESTION_TYPE_PROMPT_TRUE_FALSE,
+        "parameters": {},
+        "description": "判断题的生成要求"
+    })
+    
+    # 11. 填空题提示词
+    prompts.append({
+        "function_type": "question_type",
+        "prompt_type": "requirement",
+        "mode": "填空题",
+        "content": QUESTION_TYPE_PROMPT_FILL_BLANK,
+        "parameters": {},
+        "description": "填空题的生成要求"
+    })
+    
+    # 12. 简答题提示词
+    prompts.append({
+        "function_type": "question_type",
+        "prompt_type": "requirement",
+        "mode": "简答题",
+        "content": QUESTION_TYPE_PROMPT_SHORT_ANSWER,
+        "parameters": {},
+        "description": "简答题的生成要求"
+    })
+    
+    # 13. 编程题提示词
+    prompts.append({
+        "function_type": "question_type",
+        "prompt_type": "requirement",
+        "mode": "编程题",
+        "content": QUESTION_TYPE_PROMPT_PROGRAMMING,
+        "parameters": {},
+        "description": "编程题的生成要求"
+    })
+    
+    # ============================================================
+    # Few-Shot 示例
+    # ============================================================
+    
+    # 14. Few-Shot 示例
+    prompts.append({
+        "function_type": "few_shot",
+        "prompt_type": "example",
+        "mode": None,
+        "content": FEW_SHOT_EXAMPLE_PROMPT,
+        "parameters": {},
+        "description": "题目生成的 Few-Shot 示例"
     })
     
     return prompts

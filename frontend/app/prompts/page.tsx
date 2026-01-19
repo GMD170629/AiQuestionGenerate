@@ -9,14 +9,20 @@ import {
   Save, 
   AlertCircle, 
   CheckCircle2,
-  Eye,
   Edit,
   X,
   ChevronDown,
   ChevronUp,
   Plus,
   MousePointerClick,
-  ClipboardList
+  ClipboardList,
+  ListChecks,
+  Lightbulb,
+  Code,
+  CheckSquare,
+  CircleDot,
+  PenLine,
+  MessageSquare
 } from 'lucide-react'
 import { getApiUrl } from '@/lib/api'
 
@@ -31,7 +37,7 @@ interface PromptParameter {
 interface Prompt {
   prompt_id: string
   function_type: string
-  prompt_type: 'system' | 'user'
+  prompt_type: string  // 改为 string 以支持更多类型
   mode?: string
   content: string
   parameters?: PromptParameter[]
@@ -40,6 +46,7 @@ interface Prompt {
   updated_at?: string
 }
 
+// 基础功能类型（系统提示词 + 用户提示词）
 const FUNCTION_TYPES = [
   {
     id: 'knowledge_extraction',
@@ -65,6 +72,16 @@ const FUNCTION_TYPES = [
     icon: Settings,
     modes: ['提高习题']
   }
+]
+
+// 题型提示词配置
+const QUESTION_TYPE_PROMPTS = [
+  { mode: '单选题', name: '单选题', icon: CircleDot },
+  { mode: '多选题', name: '多选题', icon: CheckSquare },
+  { mode: '判断题', name: '判断题', icon: CheckCircle2 },
+  { mode: '填空题', name: '填空题', icon: PenLine },
+  { mode: '简答题', name: '简答题', icon: MessageSquare },
+  { mode: '编程题', name: '编程题', icon: Code }
 ]
 
 export default function PromptsPage() {
@@ -233,6 +250,59 @@ export default function PromptsPage() {
       newExpanded.add(key)
     }
     setExpandedSections(newExpanded)
+  }
+
+  // 获取题型提示词
+  const getQuestionTypePrompt = (mode: string): Prompt | undefined => {
+    return prompts.find(p => 
+      p.function_type === 'question_type' && 
+      p.prompt_type === 'requirement' && 
+      p.mode === mode
+    )
+  }
+
+  // 获取 Few-Shot 示例
+  const getFewShotPrompt = (): Prompt | undefined => {
+    return prompts.find(p => 
+      p.function_type === 'few_shot' && 
+      p.prompt_type === 'example'
+    )
+  }
+
+  // 编辑题型提示词
+  const handleEditQuestionType = (mode: string) => {
+    const existingPrompt = getQuestionTypePrompt(mode)
+    if (existingPrompt) {
+      setEditingPrompt({ ...existingPrompt })
+    } else {
+      setEditingPrompt({
+        prompt_id: '',
+        function_type: 'question_type',
+        prompt_type: 'requirement',
+        mode: mode,
+        content: '',
+        parameters: [],
+        description: `${mode}的生成要求`
+      })
+    }
+  }
+
+  // 编辑 Few-Shot 示例
+  const handleEditFewShot = () => {
+    const existingPrompt = getFewShotPrompt()
+    if (existingPrompt) {
+      setEditingPrompt({ ...existingPrompt })
+    } else {
+      setEditingPrompt({
+        prompt_id: '',
+        function_type: 'few_shot',
+        prompt_type: 'example',
+        mode: undefined,
+        content: '',
+        parameters: [],
+        description: '题目生成的 Few-Shot 示例'
+      })
+    }
   }
 
   const renderPromptSection = (
@@ -416,6 +486,168 @@ export default function PromptsPage() {
     )
   }
 
+  // 渲染题型提示词区块
+  const renderQuestionTypeSection = () => {
+    const sectionKey = 'question_type'
+    
+    return (
+      <div className="mb-6">
+        <div 
+          className="flex items-center justify-between p-4 bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-750"
+          onClick={() => toggleSection(sectionKey)}
+        >
+          <div className="flex items-center gap-3">
+            <ListChecks className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              题型生成要求
+            </h2>
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              （各题型的具体生成规则）
+            </span>
+          </div>
+          {expandedSections.has(sectionKey) ? (
+            <ChevronUp className="w-5 h-5 text-gray-500" />
+          ) : (
+            <ChevronDown className="w-5 h-5 text-gray-500" />
+          )}
+        </div>
+
+        {expandedSections.has(sectionKey) && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            {QUESTION_TYPE_PROMPTS.map(({ mode, name, icon: Icon }) => {
+              const prompt = getQuestionTypePrompt(mode)
+              return (
+                <div 
+                  key={mode}
+                  className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4"
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Icon className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                      <h3 className="text-md font-semibold text-gray-900 dark:text-gray-100">
+                        {name}
+                      </h3>
+                    </div>
+                    <button
+                      onClick={() => handleEditQuestionType(mode)}
+                      className="flex items-center gap-2 px-3 py-1.5 text-sm text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition-colors"
+                    >
+                      {prompt ? (
+                        <>
+                          <Edit className="w-4 h-4" />
+                          编辑
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-4 h-4" />
+                          创建
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {prompt ? (
+                    <div className="space-y-2">
+                      {prompt.description && (
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          {prompt.description}
+                        </p>
+                      )}
+                      <div className="bg-gray-50 dark:bg-gray-900 rounded-md p-3 max-h-48 overflow-y-auto">
+                        <pre className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
+                          {prompt.content}
+                        </pre>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      暂无{name}生成要求
+                    </p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // 渲染 Few-Shot 示例区块
+  const renderFewShotSection = () => {
+    const sectionKey = 'few_shot'
+    const prompt = getFewShotPrompt()
+    
+    return (
+      <div className="mb-6">
+        <div 
+          className="flex items-center justify-between p-4 bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-750"
+          onClick={() => toggleSection(sectionKey)}
+        >
+          <div className="flex items-center gap-3">
+            <Lightbulb className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Few-Shot 示例
+            </h2>
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              （题目生成的参考示例）
+            </span>
+          </div>
+          {expandedSections.has(sectionKey) ? (
+            <ChevronUp className="w-5 h-5 text-gray-500" />
+          ) : (
+            <ChevronDown className="w-5 h-5 text-gray-500" />
+          )}
+        </div>
+
+        {expandedSections.has(sectionKey) && (
+          <div className="mt-4">
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-md font-semibold text-gray-900 dark:text-gray-100">
+                  示例模板
+                </h3>
+                <button
+                  onClick={handleEditFewShot}
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-md transition-colors"
+                >
+                  {prompt ? (
+                    <>
+                      <Edit className="w-4 h-4" />
+                      编辑
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-4 h-4" />
+                      创建
+                    </>
+                  )}
+                </button>
+              </div>
+              {prompt ? (
+                <div className="space-y-3">
+                  {prompt.description && (
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                      {prompt.description}
+                    </p>
+                  )}
+                  <div className="bg-gray-50 dark:bg-gray-900 rounded-md p-3 max-h-96 overflow-y-auto">
+                    <pre className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
+                      {prompt.content}
+                    </pre>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  暂无 Few-Shot 示例
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-6">
       <div className="max-w-7xl mx-auto">
@@ -460,14 +692,31 @@ export default function PromptsPage() {
           </div>
         ) : (
           <div className="space-y-6">
-            {FUNCTION_TYPES.map(func => 
-              renderPromptSection(
-                func.id,
-                func.name,
-                func.icon,
-                func.modes
-              )
-            )}
+            {/* 基础功能提示词 */}
+            <div className="mb-8">
+              <h2 className="text-xl font-bold text-gray-800 dark:text-gray-200 mb-4 flex items-center gap-2">
+                <FileText className="w-5 h-5" />
+                基础功能提示词
+              </h2>
+              {FUNCTION_TYPES.map(func => 
+                renderPromptSection(
+                  func.id,
+                  func.name,
+                  func.icon,
+                  func.modes
+                )
+              )}
+            </div>
+
+            {/* 题型生成要求 */}
+            <div className="mb-8">
+              <h2 className="text-xl font-bold text-gray-800 dark:text-gray-200 mb-4 flex items-center gap-2">
+                <ListChecks className="w-5 h-5" />
+                题型相关提示词
+              </h2>
+              {renderQuestionTypeSection()}
+              {renderFewShotSection()}
+            </div>
           </div>
         )}
 

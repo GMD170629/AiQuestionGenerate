@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { BookOpen, Filter, Loader2, RefreshCw, Download, ChevronLeft, ChevronRight, FileText } from 'lucide-react'
+import { BookOpen, Filter, Loader2, RefreshCw, Download, ChevronLeft, ChevronRight, FileText, ClipboardList } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { Question, QuestionType, Difficulty } from '@/types/question'
 import QuestionListComponent from './QuestionList'
@@ -28,6 +28,15 @@ interface FileInfo {
   upload_time?: string
 }
 
+interface TaskInfo {
+  task_id: string
+  textbook_id: string
+  textbook_name?: string
+  status: string
+  mode?: string
+  created_at: string
+}
+
 interface QuestionStatistics {
   total: number
   by_type: Record<string, number>
@@ -40,11 +49,13 @@ export default function QuestionLibrary() {
   const [error, setError] = useState<string | null>(null)
   const [textbooks, setTextbooks] = useState<TextbookInfo[]>([])
   const [files, setFiles] = useState<FileInfo[]>([])
+  const [tasks, setTasks] = useState<TaskInfo[]>([])
   const [statistics, setStatistics] = useState<QuestionStatistics | null>(null)
   
   // 筛选条件
   const [selectedTextbookId, setSelectedTextbookId] = useState<string>('全部')
   const [selectedFileId, setSelectedFileId] = useState<string>('全部')
+  const [selectedTaskId, setSelectedTaskId] = useState<string>('全部')
   const [selectedType, setSelectedType] = useState<QuestionType | '全部'>('全部')
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty | '全部'>('全部')
   
@@ -81,6 +92,22 @@ export default function QuestionLibrary() {
     }
   }
   
+  // 加载任务列表
+  const loadTasks = async () => {
+    try {
+      const response = await fetch(getApiUrl('/tasks'))
+      if (!response.ok) {
+        throw new Error('获取任务列表失败')
+      }
+      const data = await response.json()
+      // 只显示已完成的任务（有题目生成的任务）
+      const completedTasks = data.filter((task: TaskInfo) => task.status === 'COMPLETED')
+      setTasks(completedTasks)
+    } catch (err) {
+      console.error('加载任务列表失败:', err)
+    }
+  }
+  
   // 加载统计信息
   const loadStatistics = async () => {
     try {
@@ -107,6 +134,9 @@ export default function QuestionLibrary() {
       }
       if (selectedFileId !== '全部') {
         params.append('file_id', selectedFileId)
+      }
+      if (selectedTaskId !== '全部') {
+        params.append('task_id', selectedTaskId)
       }
       if (selectedType !== '全部') {
         params.append('question_type', selectedType)
@@ -136,19 +166,20 @@ export default function QuestionLibrary() {
     } finally {
       setLoading(false)
     }
-  }, [selectedTextbookId, selectedFileId, selectedType, selectedDifficulty, currentPage, pageSize])
+  }, [selectedTextbookId, selectedFileId, selectedTaskId, selectedType, selectedDifficulty, currentPage, pageSize])
   
   // 初始化加载
   useEffect(() => {
     loadTextbooks()
     loadFiles()
+    loadTasks()
     loadStatistics()
   }, [])
   
   // 当筛选条件改变时重置到第一页并重新加载
   useEffect(() => {
     setCurrentPage(1)
-  }, [selectedTextbookId, selectedFileId, selectedType, selectedDifficulty])
+  }, [selectedTextbookId, selectedFileId, selectedTaskId, selectedType, selectedDifficulty])
   
   // 当分页或筛选条件改变时重新加载
   useEffect(() => {
@@ -232,6 +263,9 @@ export default function QuestionLibrary() {
                   if (selectedFileId !== '全部') {
                     params.append('file_id', selectedFileId)
                   }
+                  if (selectedTaskId !== '全部') {
+                    params.append('task_id', selectedTaskId)
+                  }
                   if (selectedType !== '全部') {
                     params.append('question_type', selectedType)
                   }
@@ -265,6 +299,12 @@ export default function QuestionLibrary() {
                     const selectedFile = files.find(f => f.file_id === selectedFileId)
                     if (selectedFile) {
                       filename = selectedFile.filename.replace(/\.[^/.]+$/, '') // 移除文件扩展名
+                    }
+                  }
+                  if (selectedTaskId !== '全部') {
+                    const selectedTask = tasks.find(t => t.task_id === selectedTaskId)
+                    if (selectedTask) {
+                      filename = `${selectedTask.textbook_name || '任务'}_${selectedTask.mode || '默认模式'}`
                     }
                   }
                   if (selectedType !== '全部') {
@@ -371,6 +411,24 @@ export default function QuestionLibrary() {
                   {files.map((file) => (
                     <SelectItem key={file.file_id} value={file.file_id}>
                       {file.filename}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            
+            {/* 任务筛选 */}
+            <div className="flex items-center gap-2 relative z-10">
+              <ClipboardList className="h-5 w-5 text-slate-500" />
+              <Select value={selectedTaskId} onValueChange={setSelectedTaskId}>
+                <SelectTrigger className="min-w-[200px]">
+                  <SelectValue placeholder="选择任务" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="全部">全部任务</SelectItem>
+                  {tasks.map((task) => (
+                    <SelectItem key={task.task_id} value={task.task_id}>
+                      {task.textbook_name || '未知教材'} - {task.mode || '默认模式'} ({new Date(task.created_at).toLocaleDateString()})
                     </SelectItem>
                   ))}
                 </SelectContent>

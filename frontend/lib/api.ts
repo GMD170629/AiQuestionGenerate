@@ -1,12 +1,15 @@
 /**
  * API 配置工具
- * 统一管理 API 基础 URL
+ * 统一管理 API 基础 URL 和请求超时
  * 
  * 使用 Next.js 代理模式避免跨域问题：
  * - 前端通过 /api/* 路径请求
  * - Next.js 自动代理到后端服务器
  * - 这样不需要修改后端 CORS 配置
  */
+
+// 默认请求超时时间：5分钟（300000毫秒）
+export const DEFAULT_TIMEOUT = 5 * 60 * 1000;
 
 // 判断是否使用代理模式
 // 如果设置了 NEXT_PUBLIC_USE_PROXY=true，或者没有设置 NEXT_PUBLIC_API_URL，则使用代理
@@ -71,5 +74,52 @@ export function getApiUrl(path: string, useApiRoute: boolean = false): string {
   const url = `${baseUrl}${normalizedPath}`;
   console.log('[getApiUrl] 直接模式:', { path, normalizedPath, USE_PROXY, API_BASE_URL, baseUrl, result: url });
   return url;
+}
+
+/**
+ * 带超时功能的 fetch 请求封装
+ * @param input 请求地址或 Request 对象
+ * @param init fetch 配置选项
+ * @param timeout 超时时间（毫秒），默认为 5 分钟
+ * @returns Promise<Response>
+ */
+export async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  timeout: number = DEFAULT_TIMEOUT
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+    return response;
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`请求超时（超过 ${Math.round(timeout / 1000)} 秒）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * 便捷方法：使用 API URL 进行带超时的请求
+ * @param path API 路径
+ * @param init fetch 配置选项
+ * @param timeout 超时时间（毫秒），默认为 5 分钟
+ * @returns Promise<Response>
+ */
+export async function apiFetch(
+  path: string,
+  init?: RequestInit,
+  timeout: number = DEFAULT_TIMEOUT
+): Promise<Response> {
+  const url = getApiUrl(path);
+  return fetchWithTimeout(url, init, timeout);
 }
 

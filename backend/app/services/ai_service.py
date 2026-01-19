@@ -577,7 +577,7 @@ def build_system_prompt(include_type_requirements: bool = True, mode: Optional[s
 class OpenRouterClient:
     """OpenRouter API 客户端"""
     
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, api_endpoint: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, api_endpoint: Optional[str] = None, max_tokens_override: Optional[int] = None):
         """
         初始化 OpenRouter 客户端
         
@@ -585,6 +585,7 @@ class OpenRouterClient:
             api_key: OpenRouter API 密钥（如果为 None，则从数据库读取）
             model: 模型名称（如果为 None，则从数据库读取）
             api_endpoint: API端点URL（如果为 None，则从数据库读取）
+            max_tokens_override: 覆盖配置的 max_tokens 值（如果为 None，则从数据库读取）
         """
         # 优先使用传入的参数，否则从数据库读取配置
         config = db.get_ai_config()
@@ -592,6 +593,8 @@ class OpenRouterClient:
         self.api_key = api_key if api_key else config.get("api_key", "")
         self.model = model if model else config.get("model", "openai/gpt-4o-mini")
         self.api_endpoint = api_endpoint if api_endpoint else config.get("api_endpoint", DEFAULT_API_URL)
+        # 用户配置的 max_tokens 限制，如果设置了则作为上限
+        self.configured_max_tokens = max_tokens_override if max_tokens_override is not None else config.get("max_tokens")
         
         if not self.api_key:
             raise ValueError(
@@ -602,6 +605,24 @@ class OpenRouterClient:
         print(f"[OpenRouterClient] API端点: {self.api_endpoint}")
         print(f"[OpenRouterClient] 使用模型: {self.model}")
         print(f"[OpenRouterClient] API Key 已设置: {'是' if self.api_key else '否'} (长度: {len(self.api_key) if self.api_key else 0})")
+        print(f"[OpenRouterClient] 配置的 max_tokens 限制: {self.configured_max_tokens if self.configured_max_tokens else '未设置（使用系统默认值）'}")
+    
+    def _get_effective_max_tokens(self) -> int:
+        """
+        获取实际使用的 max_tokens 值
+        
+        直接使用用户配置的 max_tokens 值，如果未配置则使用默认值 8000。
+            
+        Returns:
+            实际应该使用的 max_tokens 值
+        """
+        if self.configured_max_tokens is not None and self.configured_max_tokens > 0:
+            logger.info(f"[max_tokens] 使用用户配置值: {self.configured_max_tokens}")
+            return self.configured_max_tokens
+        # 如果用户未配置，使用默认值
+        default_max_tokens = 8000
+        logger.info(f"[max_tokens] 用户未配置，使用默认值: {default_max_tokens}")
+        return default_max_tokens
     
     async def _continue_generation_on_length_limit(
         self,
@@ -800,11 +821,8 @@ class OpenRouterClient:
             "X-Title": "AI Question Generator",
         }
         
-        # 根据题目数量动态调整max_tokens
-        max_tokens = calculate_max_tokens_for_questions(
-            batch_count,
-            model=self.model
-        )
+        # 使用用户配置的 max_tokens 值
+        max_tokens = self._get_effective_max_tokens()
         
         payload = {
             "model": self.model,
@@ -1283,8 +1301,8 @@ class OpenRouterClient:
             "X-Title": "AI Question Generator",
         }
         
-        # 估算 max_tokens（规划任务通常不需要太多 tokens）
-        max_tokens = min(4000, MAX_KNOWLEDGE_EXTRACTION_TOKENS)
+        # 使用用户配置的 max_tokens 值
+        max_tokens = self._get_effective_max_tokens()
         
         payload = {
             "model": self.model,
@@ -1924,11 +1942,8 @@ class OpenRouterClient:
             "X-Title": "AI Question Generator",
         }
         
-        # 根据题目数量动态调整max_tokens
-        max_tokens = calculate_max_tokens_for_questions(
-            batch_count,
-            model=self.model
-        )
+        # 使用用户配置的 max_tokens 值
+        max_tokens = self._get_effective_max_tokens()
         
         # 输出全书出题时使用的提示词到日志
         print("\n" + "="*80)

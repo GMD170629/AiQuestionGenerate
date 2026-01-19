@@ -269,10 +269,24 @@ class Database:
                     api_endpoint TEXT NOT NULL DEFAULT 'https://openrouter.ai/api/v1/chat/completions',
                     api_key TEXT,
                     model TEXT NOT NULL DEFAULT 'openai/gpt-4o-mini',
+                    max_tokens INTEGER,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(config_id)
                 )
             """)
+            
+            # 检查 ai_config 表是否存在，添加 max_tokens 列（用于升级现有数据库）
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_config'")
+            if cursor.fetchone():
+                cursor.execute("PRAGMA table_info(ai_config)")
+                ai_config_columns = [row[1] for row in cursor.fetchall()]
+                
+                # 添加 max_tokens 列（如果不存在）
+                if 'max_tokens' not in ai_config_columns:
+                    try:
+                        cursor.execute("ALTER TABLE ai_config ADD COLUMN max_tokens INTEGER")
+                    except sqlite3.OperationalError:
+                        pass
             
             # 提示词表（存储系统提示词和用户提示词模板）
             cursor.execute("""
@@ -982,12 +996,12 @@ class Database:
         获取AI配置
         
         Returns:
-            AI配置字典，包含 api_endpoint, api_key, model
+            AI配置字典，包含 api_endpoint, api_key, model, max_tokens
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT api_endpoint, api_key, model, updated_at
+                SELECT api_endpoint, api_key, model, max_tokens, updated_at
                 FROM ai_config
                 ORDER BY config_id DESC
                 LIMIT 1
@@ -998,6 +1012,7 @@ class Database:
                     "api_endpoint": row["api_endpoint"],
                     "api_key": row["api_key"] or "",
                     "model": row["model"],
+                    "max_tokens": row["max_tokens"],
                     "updated_at": row["updated_at"]
                 }
             # 如果没有配置，返回默认值
@@ -1005,10 +1020,11 @@ class Database:
                 "api_endpoint": "https://openrouter.ai/api/v1/chat/completions",
                 "api_key": "",
                 "model": "openai/gpt-4o-mini",
+                "max_tokens": None,
                 "updated_at": datetime.now().isoformat()
             }
     
-    def update_ai_config(self, api_endpoint: str, api_key: str, model: str) -> bool:
+    def update_ai_config(self, api_endpoint: str, api_key: str, model: str, max_tokens: Optional[int] = None) -> bool:
         """
         更新AI配置
         
@@ -1016,6 +1032,7 @@ class Database:
             api_endpoint: API端点URL
             api_key: API密钥
             model: 模型名称
+            max_tokens: 最大输出 tokens 数量限制（可选，为 None 表示使用系统默认值）
             
         Returns:
             是否成功更新
@@ -1030,15 +1047,15 @@ class Database:
                 # 更新现有配置
                 cursor.execute("""
                     UPDATE ai_config
-                    SET api_endpoint = ?, api_key = ?, model = ?, updated_at = ?
+                    SET api_endpoint = ?, api_key = ?, model = ?, max_tokens = ?, updated_at = ?
                     WHERE config_id = (SELECT config_id FROM ai_config ORDER BY config_id DESC LIMIT 1)
-                """, (api_endpoint, api_key, model, datetime.now().isoformat()))
+                """, (api_endpoint, api_key, model, max_tokens, datetime.now().isoformat()))
             else:
                 # 插入新配置
                 cursor.execute("""
-                    INSERT INTO ai_config (api_endpoint, api_key, model, updated_at)
-                    VALUES (?, ?, ?, ?)
-                """, (api_endpoint, api_key, model, datetime.now().isoformat()))
+                    INSERT INTO ai_config (api_endpoint, api_key, model, max_tokens, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (api_endpoint, api_key, model, max_tokens, datetime.now().isoformat()))
             
             conn.commit()
             return cursor.rowcount > 0

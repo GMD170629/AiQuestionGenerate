@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { FlaskConical, Loader2, ChevronDown, ChevronUp, Code, FileText, Brain, MessageSquare, Network, Activity, Database } from 'lucide-react'
-import { getApiUrl } from '@/lib/api'
+import { getApiUrl, fetchWithTimeout } from '@/lib/api'
 import {
   Select,
   SelectContent,
@@ -215,7 +215,7 @@ export default function TestGenerationPage() {
       if (autoPlan) {
         setPlanning(true)
         try {
-          const planResponse = await fetch(getApiUrl('/test-generation/plan'), {
+          const planResponse = await fetchWithTimeout(getApiUrl('/test-generation/plan'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -254,7 +254,7 @@ export default function TestGenerationPage() {
         }
       }
 
-      const response = await fetch(getApiUrl('/test-generation/test'), {
+      const response = await fetchWithTimeout(getApiUrl('/test-generation/test'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

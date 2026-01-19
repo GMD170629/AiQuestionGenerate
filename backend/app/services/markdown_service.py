@@ -172,8 +172,12 @@ class MarkdownProcessor(BaseMarkdownProcessor):
                 "X-Title": "AI Question Generator",
             }
             
-            # 使用统一的 token 限制配置
-            max_tokens = get_max_output_tokens(client.model, "knowledge_extraction")
+            # 使用用户配置的 max_tokens 值
+            configured_max_tokens = client.configured_max_tokens if hasattr(client, 'configured_max_tokens') else None
+            if configured_max_tokens and configured_max_tokens > 0:
+                max_tokens = configured_max_tokens
+            else:
+                max_tokens = 8000  # 默认值
             
             payload = {
                 "model": client.model,
@@ -1076,15 +1080,14 @@ async def _build_dependencies_single_batch(
         {"role": "user", "content": user_prompt}
     ]
     
-    # 根据知识点数量动态调整 max_tokens
-    # 估算：每个知识点大约需要 100-200 tokens，加上 JSON 结构，预留更多空间
-    estimated_tokens = total_concepts * 200 + 1000
+    # 使用用户配置的 max_tokens 值
+    configured_max_tokens = client.configured_max_tokens if hasattr(client, 'configured_max_tokens') else None
+    if configured_max_tokens and configured_max_tokens > 0:
+        max_tokens = configured_max_tokens
+    else:
+        max_tokens = 8000  # 默认值
     
-    # 使用统一的 token 限制配置
-    model_max = get_max_output_tokens(model, "dependency_building")
-    max_tokens = max(MIN_DEPENDENCY_BUILDING_TOKENS, min(model_max, estimated_tokens))
-    
-    print(f"[依赖构建] 使用 max_tokens={max_tokens} (估算需要 {estimated_tokens} tokens)")
+    print(f"[依赖构建] 使用 max_tokens={max_tokens}")
     
     payload = {
         "model": client.model,

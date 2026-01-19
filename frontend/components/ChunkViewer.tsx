@@ -7,7 +7,7 @@ import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog'
-import { getApiUrl } from '@/lib/api'
+import { getApiUrl, fetchWithTimeout } from '@/lib/api'
 
 interface ChunkMetadata {
   [key: string]: any
@@ -192,7 +192,7 @@ export default function ChunkViewer({ fileId, filename, onClose }: ChunkViewerPr
       setError(null)
       
       // 调用后端API重新解析文件
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         getApiUrl(`/files/${fileId}/parse?chunk_size=${chunkSize}&chunk_overlap=${chunkOverlap}`),
         {
           method: 'POST',

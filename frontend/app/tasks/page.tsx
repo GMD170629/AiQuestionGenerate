@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { BookOpen, Play, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Pause, PlayCircle, X } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { getApiUrl } from '@/lib/api'
+import { getApiUrl, fetchWithTimeout } from '@/lib/api'
 import {
   Select,
   SelectContent,
@@ -142,7 +142,7 @@ export default function TasksPage() {
         question_types: selectedQuestionTypes.length > 0 ? selectedQuestionTypes : undefined
       })
       
-      const response = await fetch(getApiUrl('/tasks/create-and-execute'), {
+      const response = await fetchWithTimeout(getApiUrl('/tasks/create-and-execute'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 

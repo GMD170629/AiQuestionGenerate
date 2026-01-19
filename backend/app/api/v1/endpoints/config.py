@@ -31,10 +31,10 @@ async def get_ai_config():
 @router.post("/ai")
 async def update_ai_config(config: AIConfigUpdate):
     """
-    更新 AI 配置信息（API端点、密钥、模型）
+    更新 AI 配置信息（API端点、密钥、模型、max_tokens）
     
     Args:
-        config: AI配置对象，包含 api_endpoint, api_key, model
+        config: AI配置对象，包含 api_endpoint, api_key, model, max_tokens
     """
     try:
         # 验证配置
@@ -47,7 +47,8 @@ async def update_ai_config(config: AIConfigUpdate):
         success = db.update_ai_config(
             api_endpoint=config.api_endpoint,
             api_key=config.api_key,
-            model=config.model
+            model=config.model,
+            max_tokens=config.max_tokens
         )
         
         if success:
@@ -57,7 +58,8 @@ async def update_ai_config(config: AIConfigUpdate):
                     "config": {
                         "api_endpoint": config.api_endpoint,
                         "api_key": config.api_key[:10] + "..." if len(config.api_key) > 10 else "已设置",
-                        "model": config.model
+                        "model": config.model,
+                        "max_tokens": config.max_tokens
                     }
                 }
             )

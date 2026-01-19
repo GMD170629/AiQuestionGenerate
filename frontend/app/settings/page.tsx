@@ -9,6 +9,7 @@ interface AIConfig {
   api_endpoint: string
   api_key: string
   model: string
+  max_tokens?: number | null
   updated_at?: string
 }
 
@@ -16,7 +17,8 @@ export default function SettingsPage() {
   const [config, setConfig] = useState<AIConfig>({
     api_endpoint: 'https://openrouter.ai/api/v1/chat/completions',
     api_key: '',
-    model: 'openai/gpt-4o-mini'
+    model: 'openai/gpt-4o-mini',
+    max_tokens: null
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -240,6 +242,32 @@ export default function SettingsPage() {
             />
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
               要使用的 AI 模型名称（例如：openai/gpt-4o-mini, anthropic/claude-3-haiku 等）
+            </p>
+          </div>
+
+          {/* 最大输出 Tokens */}
+          <div>
+            <label htmlFor="max_tokens" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              最大输出 Tokens
+            </label>
+            <input
+              type="number"
+              id="max_tokens"
+              value={config.max_tokens ?? ''}
+              onChange={(e) => {
+                const value = e.target.value
+                setConfig({ 
+                  ...config, 
+                  max_tokens: value === '' ? null : parseInt(value, 10) 
+                })
+              }}
+              placeholder="建议设置 8000 或更高"
+              min={100}
+              max={128000}
+              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100"
+            />
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              限制模型每次请求的最大输出 token 数量（范围：100-128000）。建议根据使用的模型设置合适的值，留空将使用默认值 8000。
             </p>
           </div>
 

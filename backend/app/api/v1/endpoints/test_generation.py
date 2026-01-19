@@ -18,7 +18,6 @@ from app.services.ai_service import (
     get_chapter_name_from_chunks,
     extract_knowledge_from_chunks,
     build_system_prompt,
-    calculate_max_tokens_for_questions,
 )
 from prompts import PromptManager
 from app.core.db import db
@@ -62,6 +61,16 @@ async def test_generation(request: TestGenerationRequest):
     - LLM接口调用过程（请求信息、HTTP状态码）
     - LLM接口返回的原始信息（tokens使用情况、finish_reason等）
     """
+    # 初始化调试信息变量（在最外层初始化，确保异常处理时可访问）
+    request_info = None
+    http_status_code = None
+    api_response_full = None
+    finish_reason = None
+    usage_info = None
+    error_response_text = None
+    raw_response = None
+    questions_data = None
+    
     try:
         # 1. 获取文件信息
         file_info = db.get_file(request.file_id)
@@ -162,11 +171,12 @@ async def test_generation(request: TestGenerationRequest):
             "X-Title": "AI Question Generator",
         }
         
-        # 使用统一的 token 限制计算函数
-        max_tokens = calculate_max_tokens_for_questions(
-            request.question_count,
-            model=client.model
-        )
+        # 使用用户配置的 max_tokens 值
+        configured_max_tokens = client.configured_max_tokens if hasattr(client, 'configured_max_tokens') else None
+        if configured_max_tokens and configured_max_tokens > 0:
+            max_tokens = configured_max_tokens
+        else:
+            max_tokens = 8000  # 默认值
         
         payload = {
             "model": client.model,
@@ -177,7 +187,7 @@ async def test_generation(request: TestGenerationRequest):
         
         from app.services.ai_service import get_timeout_config
         
-        # 初始化调试信息变量
+        # 设置调试信息（此时已获取到 LLM 客户端和请求参数）
         request_info = {
             "api_endpoint": client.api_endpoint,
             "model": client.model,
@@ -194,13 +204,6 @@ async def test_generation(request: TestGenerationRequest):
                 "Authorization": "Bearer ***" if client.api_key else None,  # 隐藏API key
             },
         }
-        http_status_code = None
-        api_response_full = None
-        finish_reason = None
-        usage_info = None
-        error_response_text = None
-        raw_response = None
-        questions_data = None
         
         # 使用针对模型的超时配置
         timeout_config = get_timeout_config(client.model, is_stream=False)
@@ -386,6 +389,10 @@ async def test_generation(request: TestGenerationRequest):
         raise HTTPException(status_code=500, detail=error_data)
     except Exception as e:
         # 其他错误，尝试返回部分调试信息
+        error_trace = traceback.format_exc()
+        logger.error(f"[测试生成] 发生错误: {e}")
+        logger.debug(f"[测试生成] 错误堆栈:\n{error_trace}")
+        
         try:
             error_msg = repr(e) if hasattr(e, '__repr__') else "测试生成失败"
         except (UnicodeEncodeError, UnicodeDecodeError):
@@ -394,6 +401,7 @@ async def test_generation(request: TestGenerationRequest):
         error_data = {
             "error": "测试生成失败",
             "error_message": error_msg,
+            "error_traceback": error_trace,  # 添加完整错误堆栈
             "http_status_code": http_status_code,
             "llm_request": request_info,
             "llm_response": {

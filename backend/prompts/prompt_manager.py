@@ -171,9 +171,9 @@ class PromptManager:
         if not question_types or len(question_types) == 0:
             raise ValueError("question_types 不能为空，必须指定要生成的题型")
         
-        # 验证全书生成任务时教材名称必传
-        if mode is not None and (not textbook_name or textbook_name.strip() == ""):
-            raise ValueError("全书生成任务时，textbook_name（教材名称）为必传参数，不能为空")
+        # 如果没有提供教材名称，使用默认值（测试接口和单切片生成可能不需要教材名称）
+        if not textbook_name or (isinstance(textbook_name, str) and textbook_name.strip() == ""):
+            textbook_name = "未指定教材"
         
         try:
             from app.core.db import db

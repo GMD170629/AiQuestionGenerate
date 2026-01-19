@@ -14,7 +14,7 @@ from app.models import Question, QuestionList, ChunkGenerationPlan, TextbookGene
 from app.services.markdown_service import MarkdownProcessor
 from app.core.db import db
 from app.services.knowledge_graph_service import knowledge_graph
-from prompts import PromptManager
+from app.utils.json_repair import repair_llm_json, repair_json_array, repair_json_object, clean_json_text
 from prompts import PromptManager
 
 # 配置日志
@@ -919,59 +919,37 @@ class OpenRouterClient:
                     logger.info(f"[流式生成] 流式数据接收完成，开始解析 - 文本长度: {len(accumulated_text)}")
                     generated_text = accumulated_text.strip()
                     
-                    # 清理可能的代码块标记和前后空白
-                    if generated_text.startswith("```json"):
-                        generated_text = generated_text[7:].strip()
-                    elif generated_text.startswith("```"):
-                        generated_text = generated_text[3:].strip()
-                    
-                    if generated_text.endswith("```"):
-                        generated_text = generated_text[:-3].strip()
-                    
-                    # 解析 JSON
+                    # 使用 json-repair 解析和修复 JSON
                     questions_data = None
+                    parse_error = None
                     try:
-                        questions_data = json.loads(generated_text)
-                    except json.JSONDecodeError as e:
-                        # 尝试提取 JSON 数组部分
-                        import re
-                        json_match = re.search(r'\[\s*\{.*\}\s*\]', generated_text, re.DOTALL)
-                        if json_match:
-                            try:
-                                questions_data = json.loads(json_match.group())
-                            except json.JSONDecodeError:
-                                pass
-                        
-                        if questions_data is None:
-                            start_idx = generated_text.find('[')
-                            end_idx = generated_text.rfind(']')
-                            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                                try:
-                                    json_str = generated_text[start_idx:end_idx + 1]
-                                    questions_data = json.loads(json_str)
-                                except json.JSONDecodeError:
-                                    pass
-                        
-                        if questions_data is None:
-                            # JSON解析失败，尝试重试
-                            if retry_count < MAX_RETRIES:
-                                if on_status_update:
-                                    on_status_update("warning", {
-                                        "message": f"JSON解析失败，正在重试 ({retry_count + 1}/{MAX_RETRIES})..."
-                                    })
-                                import asyncio
-                                retry_delay = get_retry_delay(self.model, retry_count)
-                                await asyncio.sleep(retry_delay)  # 根据模型类型和重试次数调整延迟
-                                return await self._generate_batch_stream(
-                                    context, batch_question_types, batch_count,
-                                    chapter_name, on_status_update, retry_count + 1, chunks, allowed_difficulties
-                                )
-                            else:
-                                if on_status_update:
-                                    on_status_update("error", {
-                                        "message": f"无法解析 JSON 响应（已重试{MAX_RETRIES}次）: {str(e)}"
-                                    })
-                                raise ValueError(f"无法解析 JSON 响应: {str(e)}")
+                        questions_data = repair_json_array(generated_text)
+                        logger.info(f"[流式生成] JSON 解析成功，获得 {len(questions_data)} 道题目")
+                    except Exception as e:
+                        parse_error = e
+                        logger.warning(f"[流式生成] JSON 修复失败: {e}")
+                    
+                    if questions_data is None:
+                        # JSON解析失败，尝试重试
+                        if retry_count < MAX_RETRIES:
+                            if on_status_update:
+                                on_status_update("warning", {
+                                    "message": f"JSON解析失败，正在重试 ({retry_count + 1}/{MAX_RETRIES})..."
+                                })
+                            import asyncio
+                            retry_delay = get_retry_delay(self.model, retry_count)
+                            await asyncio.sleep(retry_delay)  # 根据模型类型和重试次数调整延迟
+                            return await self._generate_batch_stream(
+                                context, batch_question_types, batch_count,
+                                chapter_name, on_status_update, retry_count + 1, chunks, allowed_difficulties
+                            )
+                        else:
+                            error_msg = str(parse_error) if parse_error else "未知错误"
+                            if on_status_update:
+                                on_status_update("error", {
+                                    "message": f"无法解析 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}"
+                                })
+                            raise ValueError(f"无法解析 JSON 响应: {error_msg}")
                     
                     # 验证并转换题目数据
                     logger.info(f"[流式生成] 开始解析题目数据 - 原始数据条数: {len(questions_data)}")
@@ -1354,48 +1332,31 @@ class OpenRouterClient:
                 # 清理可能的代码块标记和前后空白
                 generated_text = generated_text.strip()
                 
-                # 移除代码块标记
-                if generated_text.startswith("```json"):
-                    generated_text = generated_text[7:].strip()
-                elif generated_text.startswith("```"):
-                    generated_text = generated_text[3:].strip()
-                
-                if generated_text.endswith("```"):
-                    generated_text = generated_text[:-3].strip()
-                
-                # 解析 JSON
+                # 使用 json-repair 解析和修复 JSON
                 plan_data = None
+                parse_error = None
                 try:
-                    plan_data = json.loads(generated_text)
-                except json.JSONDecodeError as e:
-                    # 尝试提取 JSON 对象部分
-                    import re
-                    # 匹配 {...} 格式的 JSON 对象
-                    json_match = re.search(r'\{.*\}', generated_text, re.DOTALL)
-                    if json_match:
-                        try:
-                            plan_data = json.loads(json_match.group())
-                        except json.JSONDecodeError:
-                            pass
-                    
-                    if plan_data is None:
-                        # JSON解析失败，尝试重试
-                        if retry_count < MAX_RETRIES:
-                            import asyncio
-                            retry_delay = get_retry_delay(self.model, retry_count)
-                            await asyncio.sleep(retry_delay)
-                            return await self._plan_single_file(
-                                textbook_name, file_chunks_info, existing_type_distribution, mode, retry_count + 1
-                            )
-                        else:
-                            try:
-                                error_msg = repr(e) if hasattr(e, '__repr__') else "JSON 解析错误"
-                            except (UnicodeEncodeError, UnicodeDecodeError):
-                                error_msg = "JSON 解析错误"
-                            raise ValueError(
-                                f"无法解析规划任务 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
-                                f"响应内容前500字符: {generated_text[:500]}"
-                            )
+                    plan_data = repair_json_object(generated_text)
+                    logger.info(f"[规划任务] JSON 解析成功")
+                except Exception as e:
+                    parse_error = e
+                    logger.warning(f"[规划任务] JSON 修复失败: {e}")
+                
+                if plan_data is None:
+                    # JSON解析失败，尝试重试
+                    if retry_count < MAX_RETRIES:
+                        import asyncio
+                        retry_delay = get_retry_delay(self.model, retry_count)
+                        await asyncio.sleep(retry_delay)
+                        return await self._plan_single_file(
+                            textbook_name, file_chunks_info, existing_type_distribution, mode, retry_count + 1
+                        )
+                    else:
+                        error_msg = str(parse_error) if parse_error else "JSON 解析错误"
+                        raise ValueError(
+                            f"无法解析规划任务 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
+                            f"响应内容前500字符: {generated_text[:500]}"
+                        )
                 
                 # 验证并转换规划数据
                 try:
@@ -1669,51 +1630,32 @@ class OpenRouterClient:
                         max_continuations=2  # 规划任务最多续写2次
                     )
                 
-                # 清理可能的代码块标记和前后空白
+                # 使用 json-repair 解析和修复 JSON
                 generated_text = generated_text.strip()
-                
-                # 移除代码块标记
-                if generated_text.startswith("```json"):
-                    generated_text = generated_text[7:].strip()
-                elif generated_text.startswith("```"):
-                    generated_text = generated_text[3:].strip()
-                
-                if generated_text.endswith("```"):
-                    generated_text = generated_text[:-3].strip()
-                
-                # 解析 JSON
                 plan_data = None
+                parse_error = None
                 try:
-                    plan_data = json.loads(generated_text)
-                except json.JSONDecodeError as e:
-                    # 尝试提取 JSON 对象部分
-                    import re
-                    # 匹配 {...} 格式的 JSON 对象
-                    json_match = re.search(r'\{.*\}', generated_text, re.DOTALL)
-                    if json_match:
-                        try:
-                            plan_data = json.loads(json_match.group())
-                        except json.JSONDecodeError:
-                            pass
-                    
-                    if plan_data is None:
-                        # JSON解析失败，尝试重试
-                        if retry_count < MAX_RETRIES:
-                            import asyncio
-                            retry_delay = get_retry_delay(self.model, retry_count)
-                            await asyncio.sleep(retry_delay)
-                            return await self.plan_generation_tasks(
-                                textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
-                            )
-                        else:
-                            try:
-                                error_msg = repr(e) if hasattr(e, '__repr__') else "JSON 解析错误"
-                            except (UnicodeEncodeError, UnicodeDecodeError):
-                                error_msg = "JSON 解析错误"
-                            raise ValueError(
-                                f"无法解析规划任务 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
-                                f"响应内容前500字符: {generated_text[:500]}"
-                            )
+                    plan_data = repair_json_object(generated_text)
+                    logger.info(f"[规划任务] JSON 解析成功")
+                except Exception as e:
+                    parse_error = e
+                    logger.warning(f"[规划任务] JSON 修复失败: {e}")
+                
+                if plan_data is None:
+                    # JSON解析失败，尝试重试
+                    if retry_count < MAX_RETRIES:
+                        import asyncio
+                        retry_delay = get_retry_delay(self.model, retry_count)
+                        await asyncio.sleep(retry_delay)
+                        return await self.plan_generation_tasks(
+                            textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
+                        )
+                    else:
+                        error_msg = str(parse_error) if parse_error else "JSON 解析错误"
+                        raise ValueError(
+                            f"无法解析规划任务 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
+                            f"响应内容前500字符: {generated_text[:500]}"
+                        )
                 
                 # 验证并转换规划数据
                 try:
@@ -2019,63 +1961,33 @@ class OpenRouterClient:
                         max_continuations=3
                     )
                 
-                # 清理可能的代码块标记和前后空白
+                # 使用 json-repair 解析和修复 JSON
                 generated_text = generated_text.strip()
-                
-                # 移除代码块标记
-                if generated_text.startswith("```json"):
-                    generated_text = generated_text[7:].strip()
-                elif generated_text.startswith("```"):
-                    generated_text = generated_text[3:].strip()
-                
-                if generated_text.endswith("```"):
-                    generated_text = generated_text[:-3].strip()
-                
-                # 解析 JSON
                 questions_data = None
+                parse_error = None
                 try:
-                    questions_data = json.loads(generated_text)
-                except json.JSONDecodeError as e:
-                    # 尝试提取 JSON 数组部分（使用更精确的正则表达式）
-                    import re
-                    # 匹配 [...] 格式的 JSON 数组
-                    json_match = re.search(r'\[\s*\{.*\}\s*\]', generated_text, re.DOTALL)
-                    if json_match:
-                        try:
-                            questions_data = json.loads(json_match.group())
-                        except json.JSONDecodeError:
-                            pass
-                    
-                    # 如果还是失败，尝试查找第一个 [ 到最后一个 ] 之间的内容
-                    if questions_data is None:
-                        start_idx = generated_text.find('[')
-                        end_idx = generated_text.rfind(']')
-                        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                            try:
-                                json_str = generated_text[start_idx:end_idx + 1]
-                                questions_data = json.loads(json_str)
-                            except json.JSONDecodeError:
-                                pass
-                    
-                    if questions_data is None:
-                        # JSON解析失败，尝试重试
-                        if retry_count < MAX_RETRIES:
-                            import asyncio
-                            retry_delay = get_retry_delay(self.model, retry_count)
-                            await asyncio.sleep(retry_delay)
-                            return await self._generate_batch(
-                                context, batch_question_types, batch_count,
-                                chapter_name, retry_count + 1, chunks, allowed_difficulties, textbook_name
-                            )
-                        else:
-                            try:
-                                error_msg = repr(e) if hasattr(e, '__repr__') else "JSON 解析错误"
-                            except (UnicodeEncodeError, UnicodeDecodeError):
-                                error_msg = "JSON 解析错误"
-                            raise ValueError(
-                                f"无法解析 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
-                                f"响应内容前500字符: {generated_text[:500]}"
-                            )
+                    questions_data = repair_json_array(generated_text)
+                    logger.info(f"[题目生成] JSON 解析成功，获得 {len(questions_data)} 道题目")
+                except Exception as e:
+                    parse_error = e
+                    logger.warning(f"[题目生成] JSON 修复失败: {e}")
+                
+                if questions_data is None:
+                    # JSON解析失败，尝试重试
+                    if retry_count < MAX_RETRIES:
+                        import asyncio
+                        retry_delay = get_retry_delay(self.model, retry_count)
+                        await asyncio.sleep(retry_delay)
+                        return await self._generate_batch(
+                            context, batch_question_types, batch_count,
+                            chapter_name, retry_count + 1, chunks, allowed_difficulties, textbook_name
+                        )
+                    else:
+                        error_msg = str(parse_error) if parse_error else "JSON 解析错误"
+                        raise ValueError(
+                            f"无法解析 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
+                            f"响应内容前500字符: {generated_text[:500]}"
+                        )
                 
                 # 验证并转换题目数据
                 logger.info(f"[题目生成] 开始解析题目数据 - 原始数据条数: {len(questions_data)}")

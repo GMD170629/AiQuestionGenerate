@@ -19,6 +19,7 @@ from app.services.ai_service import (
     extract_knowledge_from_chunks,
     build_system_prompt,
 )
+from app.utils.json_repair import repair_json_array
 from prompts import PromptManager
 from app.core.db import db
 from app.core.cache import document_cache
@@ -241,42 +242,14 @@ async def test_generation(request: TestGenerationRequest):
                 
                 raw_response = result["choices"][0]["message"]["content"].strip()
                 
-                # 解析生成的题目
+                # 解析生成的题目 - 使用 json-repair 修复 JSON
                 generated_text = raw_response.strip()
-                
-                # 清理可能的代码块标记
-                if generated_text.startswith("```json"):
-                    generated_text = generated_text[7:].strip()
-                elif generated_text.startswith("```"):
-                    generated_text = generated_text[3:].strip()
-                
-                if generated_text.endswith("```"):
-                    generated_text = generated_text[:-3].strip()
-                
-                # 解析 JSON
                 questions_data = None
                 try:
-                    questions_data = json.loads(generated_text)
-                except json.JSONDecodeError:
-                    # 尝试提取 JSON 数组部分
-                    import re
-                    json_match = re.search(r'\[\s*\{.*\}\s*\]', generated_text, re.DOTALL)
-                    if json_match:
-                        try:
-                            questions_data = json.loads(json_match.group())
-                        except json.JSONDecodeError:
-                            pass
-                    
-                    # 如果还是失败，尝试查找第一个 [ 到最后一个 ] 之间的内容
-                    if questions_data is None:
-                        start_idx = generated_text.find('[')
-                        end_idx = generated_text.rfind(']')
-                        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                            try:
-                                json_str = generated_text[start_idx:end_idx + 1]
-                                questions_data = json.loads(json_str)
-                            except json.JSONDecodeError:
-                                pass
+                    questions_data = repair_json_array(generated_text)
+                    logger.info(f"[测试生成] JSON 解析成功，获得 {len(questions_data)} 道题目")
+                except Exception as e:
+                    logger.warning(f"[测试生成] JSON 修复失败: {e}")
                 
                 # 9. 构建返回结果
                 result_data = {

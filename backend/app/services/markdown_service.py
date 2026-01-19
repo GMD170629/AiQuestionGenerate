@@ -20,6 +20,7 @@ from markdown.chapter_extractor import (
     extract_chapters_from_chunks,
     build_chapters_from_toc_tree,
 )
+from app.utils.json_repair import repair_json_object, repair_llm_json
 from prompts import PromptManager
 
 
@@ -217,18 +218,10 @@ class MarkdownProcessor(BaseMarkdownProcessor):
                 
                 generated_text = result["choices"][0]["message"]["content"].strip()
                 
-                # 清理可能的代码块标记
-                if generated_text.startswith("```json"):
-                    generated_text = generated_text[7:].strip()
-                elif generated_text.startswith("```"):
-                    generated_text = generated_text[3:].strip()
-                
-                if generated_text.endswith("```"):
-                    generated_text = generated_text[:-3].strip()
-                
-                # 解析 JSON
+                # 使用 json-repair 解析和修复 JSON
                 try:
-                    knowledge_data = json.loads(generated_text)
+                    knowledge_data = repair_json_object(generated_text)
+                    print(f"[知识提取] JSON 解析成功")
                     
                     # 验证必需字段
                     if "core_concept" not in knowledge_data or "bloom_level" not in knowledge_data:
@@ -1192,32 +1185,14 @@ async def _build_dependencies_single_batch(
                 
                 generated_text = full_text
             
-            # 清理可能的代码块标记
-            if generated_text.startswith("```json"):
-                generated_text = generated_text[7:].strip()
-            elif generated_text.startswith("```"):
-                generated_text = generated_text[3:].strip()
-            
-            if generated_text.endswith("```"):
-                generated_text = generated_text[:-3].strip()
-            
-            # 尝试解析 JSON，如果失败则尝试修复
+            # 使用 json-repair 解析和修复 JSON
             dependencies_data = None
             try:
-                dependencies_data = json.loads(generated_text)
-            except json.JSONDecodeError as json_error:
-                print(f"[依赖构建] ⚠ JSON 解析失败，尝试修复被截断的 JSON: {json_error}")
-                # 尝试修复被截断的 JSON
-                fixed_text = _try_fix_truncated_json(generated_text, total_concepts)
-                if fixed_text:
-                    try:
-                        dependencies_data = json.loads(fixed_text)
-                        print(f"[依赖构建] ✓ JSON 修复成功")
-                    except json.JSONDecodeError as e2:
-                        print(f"[依赖构建] ✗ JSON 修复失败: {e2}")
-                        raise json_error  # 抛出原始错误
-                else:
-                    raise json_error  # 如果无法修复，抛出原始错误
+                dependencies_data = repair_json_object(generated_text)
+                print(f"[依赖构建] ✓ JSON 解析/修复成功")
+            except Exception as json_error:
+                print(f"[依赖构建] ✗ JSON 修复失败: {json_error}")
+                raise json_error
             
             if dependencies_data:
                 

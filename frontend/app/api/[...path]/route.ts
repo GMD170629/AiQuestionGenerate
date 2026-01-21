@@ -28,21 +28,33 @@ async function proxyRequest(
   console.log(`[API Proxy] ${method} ${targetUrl}`);
 
   try {
+    // 获取原始请求的 Content-Type
+    const contentType = request.headers.get('Content-Type') || '';
+    const isMultipart = contentType.includes('multipart/form-data');
+    const isJson = contentType.includes('application/json');
+
     // 构建请求配置
     const fetchOptions: RequestInit = {
       method,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: {} as Record<string, string>,
     };
 
     // 对于有请求体的方法，读取并转发 body
     if (['POST', 'PUT', 'PATCH'].includes(method)) {
-      try {
-        const body = await request.json();
-        fetchOptions.body = JSON.stringify(body);
-      } catch {
-        // 如果没有 JSON body，忽略
+      if (isMultipart) {
+        // 文件上传：直接转发 FormData
+        // 注意：不要手动设置 Content-Type，让 fetch 自动处理 boundary
+        const formData = await request.formData();
+        fetchOptions.body = formData;
+      } else {
+        // JSON 或其他类型
+        (fetchOptions.headers as Record<string, string>)['Content-Type'] = 'application/json';
+        try {
+          const body = await request.json();
+          fetchOptions.body = JSON.stringify(body);
+        } catch {
+          // 如果没有 JSON body，忽略
+        }
       }
     }
 

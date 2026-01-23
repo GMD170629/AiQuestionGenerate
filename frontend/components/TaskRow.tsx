@@ -129,33 +129,36 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
     }
   }
   
-  // 删除任务生成的题目
-  const handleDeleteQuestions = async () => {
+  // 删除任务（包括停止执行、删除题目、删除任务记录）
+  const handleDeleteTask = async () => {
     if (isOperating) return
     
-    if (!confirm('确定要删除此任务生成的所有题目吗？此操作不可恢复。')) {
+    const statusText = getStatusText(task.status)
+    const confirmMessage = `确定要删除此任务吗？\n\n此操作将：\n1. 停止任务执行（如果正在执行）\n2. 删除任务生成的所有题目\n3. 删除任务记录\n\n此操作不可恢复！`
+    
+    if (!confirm(confirmMessage)) {
       return
     }
     
     try {
       setIsOperating(true)
-      const response = await fetch(getApiUrl(`/tasks/${task.task_id}/questions`), {
+      const response = await fetch(getApiUrl(`/tasks/${task.task_id}`), {
         method: 'DELETE',
       })
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.detail || '删除题目失败')
+        throw new Error(errorData.detail || '删除任务失败')
       }
       
       const result = await response.json()
-      alert(`已成功删除 ${result.deleted_count} 道题目`)
+      alert(`任务已成功删除${result.deleted_count > 0 ? `，共删除 ${result.deleted_count} 道题目` : ''}`)
       
       if (onTaskUpdate) {
         onTaskUpdate()
       }
     } catch (err) {
-      alert(err instanceof Error ? err.message : '删除题目失败')
+      alert(err instanceof Error ? err.message : '删除任务失败')
     } finally {
       setIsOperating(false)
     }
@@ -305,22 +308,20 @@ export default function TaskRow({ task, formatDate, getStatusIcon, getStatusText
               </div>
             )}
             
-            {/* 已完成任务的删除题目按钮 */}
-            {task.status === 'COMPLETED' && (
-              <button
-                onClick={handleDeleteQuestions}
-                disabled={isOperating}
-                className="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-                title="删除此任务生成的所有题目"
-              >
-                {isOperating ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Trash2 className="h-4 w-4" />
-                )}
-                <span className="text-xs">删除题目</span>
-              </button>
-            )}
+            {/* 删除任务按钮（所有任务都可以删除） */}
+            <button
+              onClick={handleDeleteTask}
+              disabled={isOperating}
+              className="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+              title="删除任务（包括停止执行、删除题目、删除任务记录）"
+            >
+              {isOperating ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+              <span className="text-xs">删除</span>
+            </button>
             
             {/* 日志查看按钮 */}
             {(task.status === 'PROCESSING' || task.status === 'PAUSED') && (

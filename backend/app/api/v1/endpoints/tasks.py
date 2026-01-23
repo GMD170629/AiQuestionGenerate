@@ -537,6 +537,74 @@ async def delete_task_questions(task_id: str):
         raise HTTPException(status_code=500, detail=f"删除题目失败: {error_msg}")
 
 
+@router.delete("/{task_id}")
+async def delete_task(task_id: str):
+    """
+    删除任务及其相关数据
+    
+    此操作会：
+    1. 停止任务执行（如果任务正在执行）
+    2. 删除任务生成的所有题目
+    3. 删除任务记录
+    
+    Args:
+        task_id: 任务 ID
+        
+    Returns:
+        删除结果，包含删除的题目数量和任务信息
+    """
+    try:
+        # 检查任务是否存在
+        task = db.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        
+        current_status = task.get("status")
+        
+        # 如果任务正在执行，先停止任务
+        if current_status in ["PROCESSING", "PAUSED", "PENDING", "PLANNING"]:
+            logger.info(f"[删除任务] 任务 {task_id} 正在执行，先停止任务")
+            # 取消任务执行
+            await task_manager.cancel_task(task_id)
+            # 更新数据库状态
+            db.update_task_status(task_id, "CANCELLED", "任务已删除")
+            # 推送进度更新
+            await task_progress_manager.push_progress(
+                task_id=task_id,
+                progress=task.get("progress", 0.0),
+                message="任务已删除",
+                status="CANCELLED"
+            )
+        
+        # 删除任务生成的所有题目
+        deleted_count = db.delete_questions_by_task(task_id)
+        
+        # 删除任务记录
+        success = db.delete_task(task_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="删除任务记录失败")
+        
+        # 取消注册任务
+        await task_manager.unregister_task(task_id)
+        
+        logger.info(f"[删除任务] 任务 {task_id} 已删除，共删除 {deleted_count} 道题目")
+        
+        return JSONResponse(content={
+            "message": "任务已删除",
+            "task_id": task_id,
+            "deleted_count": deleted_count,
+            "status": current_status
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            error_msg = repr(e) if hasattr(e, '__repr__') else "删除任务失败"
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            error_msg = "删除任务失败"
+        raise HTTPException(status_code=500, detail=f"删除任务失败: {error_msg}")
+
+
 @router.post("/generate-book")
 async def generate_book(
     request: TextbookGenerationRequest

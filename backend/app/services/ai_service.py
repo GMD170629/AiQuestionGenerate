@@ -1389,15 +1389,104 @@ class OpenRouterClient:
                     
                     # 构建 ChunkGenerationPlan 对象列表
                     chunk_plans = []
+                    # 定义有效的题型列表
+                    valid_question_types = ["单选题", "多选题", "判断题", "填空题", "简答题", "编程题"]
+                    skipped_chunks = []
+                    
                     for plan_item in plans:
                         chunk_id = plan_item.get("chunk_id")
                         # 从映射中获取 chapter_name，如果 AI 返回的结果中没有则使用默认值
                         chapter_name = plan_item.get("chapter_name") or chunk_id_to_chapter_name.get(chunk_id, "未命名章节")
+                        
+                        # 验证 question_count：如果为0或负数，跳过此切片
+                        question_count = plan_item.get("question_count", 0)
+                        if question_count < 1:
+                            logger.warning(f"[规划任务] 切片 {chunk_id} 的 question_count 为 {question_count}，跳过此切片")
+                            skipped_chunks.append(chunk_id)
+                            continue
+                        
+                        # 过滤掉无效的题型
+                        question_types = plan_item.get("question_types", [])
+                        if not isinstance(question_types, list):
+                            question_types = []
+                        # 过滤掉不符合要求的题型
+                        question_types = [t for t in question_types if t in valid_question_types]
+                        
+                        # 如果过滤后 question_types 为空，跳过此切片
+                        if len(question_types) == 0:
+                            logger.warning(f"[规划任务] 切片 {chunk_id} 的 question_types 过滤后为空，跳过此切片")
+                            skipped_chunks.append(chunk_id)
+                            continue
+                        
+                        # 数据修复：确保 type_distribution 存在且有效
+                        type_distribution = plan_item.get("type_distribution", {})
+                        if not isinstance(type_distribution, dict):
+                            type_distribution = {}
+                        
+                        # 确保 type_distribution 只包含 question_types 中的题型
+                        type_distribution = {k: v for k, v in type_distribution.items() if k in question_types}
+                        
+                        # 如果 type_distribution 为空或总和为0，按比例分配
+                        distribution_sum = sum(type_distribution.values())
+                        if distribution_sum == 0 or len(type_distribution) == 0:
+                            # 按比例分配题目数量
+                            base_count = question_count // len(question_types)
+                            remainder = question_count % len(question_types)
+                            type_distribution = {}
+                            for idx, qtype in enumerate(question_types):
+                                type_distribution[qtype] = base_count + (1 if idx < remainder else 0)
+                            plan_item["type_distribution"] = type_distribution
+                            logger.info(f"[规划任务] 切片 {chunk_id} 的 type_distribution 已自动分配: {type_distribution}")
+                        else:
+                            # 如果总和与 question_count 不一致，按比例调整
+                            if distribution_sum != question_count:
+                                logger.warning(
+                                    f"[规划任务] 切片 {chunk_id} 的 type_distribution 总和 ({distribution_sum}) "
+                                    f"与 question_count ({question_count}) 不一致，正在调整"
+                                )
+                                # 按比例缩放
+                                if distribution_sum > 0:
+                                    scale_factor = question_count / distribution_sum
+                                    type_distribution = {
+                                        k: max(1, int(round(v * scale_factor))) 
+                                        for k, v in type_distribution.items()
+                                    }
+                                    # 如果调整后总和仍不一致，微调
+                                    current_sum = sum(type_distribution.values())
+                                    if current_sum != question_count:
+                                        diff = question_count - current_sum
+                                        # 优先调整数量最多的题型
+                                        sorted_types = sorted(type_distribution.items(), key=lambda x: x[1], reverse=True)
+                                        for i in range(abs(diff)):
+                                            if diff > 0:
+                                                type_distribution[sorted_types[i % len(sorted_types)][0]] += 1
+                                            else:
+                                                if type_distribution[sorted_types[i % len(sorted_types)][0]] > 1:
+                                                    type_distribution[sorted_types[i % len(sorted_types)][0]] -= 1
+                                else:
+                                    # 如果总和为0，按比例分配
+                                    base_count = question_count // len(question_types)
+                                    remainder = question_count % len(question_types)
+                                    type_distribution = {}
+                                    for idx, qtype in enumerate(question_types):
+                                        type_distribution[qtype] = base_count + (1 if idx < remainder else 0)
+                                plan_item["type_distribution"] = type_distribution
+                        
+                        # 更新 plan_item 以确保数据一致性
+                        plan_item["question_count"] = question_count
+                        plan_item["question_types"] = question_types
+                        plan_item["type_distribution"] = type_distribution
+                        
+                        # 构建 ChunkGenerationPlan 对象
                         chunk_plan = ChunkGenerationPlan(
                             **plan_item,
                             chapter_name=chapter_name
                         )
                         chunk_plans.append(chunk_plan)
+                    
+                    # 记录跳过的切片信息
+                    if skipped_chunks:
+                        logger.warning(f"[规划任务] 已跳过 {len(skipped_chunks)} 个无效切片: {skipped_chunks}")
                     
                     logger.info(f"[规划任务] 单文件规划完成 - 切片数: {len(chunk_plans)}, 总题目数: {sum(p.question_count for p in chunk_plans)}")
                     return chunk_plans
@@ -1571,208 +1660,6 @@ class OpenRouterClient:
         
         logger.info(f"[规划任务] 规划完成 - 总题目数: {total_questions}, 题型分布: {accumulated_type_distribution}")
         return textbook_plan
-        
-        # 调用 OpenRouter API
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/your-repo",
-            "X-Title": "AI Question Generator",
-        }
-        
-        # 估算 max_tokens（规划任务通常不需要太多 tokens）
-        max_tokens = min(4000, MAX_KNOWLEDGE_EXTRACTION_TOKENS)
-        
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.3,  # 规划任务使用较低温度，确保稳定性
-            "max_tokens": max_tokens,
-        }
-        
-        try:
-            # 使用针对模型的超时配置
-            timeout_config = get_timeout_config(self.model, is_stream=False)
-            async with httpx.AsyncClient(timeout=timeout_config) as client:
-                response = await client.post(
-                    self.api_endpoint,
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                
-                result = response.json()
-                
-                # 提取生成的文本
-                if "choices" not in result or len(result["choices"]) == 0:
-                    raise ValueError("API 返回结果中没有 choices 字段")
-                
-                generated_text = result["choices"][0]["message"]["content"].strip()
-                finish_reason = result["choices"][0].get("finish_reason", "")
-                
-                # 如果 finish_reason 是 "length"，继续生成剩余内容
-                if finish_reason == "length":
-                    # 构建 payload 模板（不包含 messages）
-                    payload_template = {
-                        "model": self.model,
-                        "temperature": payload.get("temperature", 0.3),
-                        "max_tokens": payload.get("max_tokens", 4000),
-                    }
-                    
-                    # 调用续写函数
-                    generated_text = await self._continue_generation_on_length_limit(
-                        messages=messages,
-                        accumulated_text=generated_text,
-                        headers=headers,
-                        payload_template=payload_template,
-                        timeout_config=timeout_config,
-                        on_status_update=None,  # 规划任务没有状态更新回调
-                        max_continuations=2  # 规划任务最多续写2次
-                    )
-                
-                # 使用 json-repair 解析和修复 JSON
-                generated_text = generated_text.strip()
-                plan_data = None
-                parse_error = None
-                try:
-                    plan_data = repair_json_object(generated_text)
-                    logger.info(f"[规划任务] JSON 解析成功")
-                except Exception as e:
-                    parse_error = e
-                    logger.warning(f"[规划任务] JSON 修复失败: {e}")
-                
-                if plan_data is None:
-                    # JSON解析失败，尝试重试
-                    if retry_count < MAX_RETRIES:
-                        import asyncio
-                        retry_delay = get_retry_delay(self.model, retry_count)
-                        await asyncio.sleep(retry_delay)
-                        return await self.plan_generation_tasks(
-                            textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
-                        )
-                    else:
-                        error_msg = str(parse_error) if parse_error else "JSON 解析错误"
-                        raise ValueError(
-                            f"无法解析规划任务 JSON 响应（已重试{MAX_RETRIES}次）: {error_msg}\n"
-                            f"响应内容前500字符: {generated_text[:500]}"
-                        )
-                
-                # 验证并转换规划数据
-                try:
-                    # 验证 plans 数组长度
-                    plans = plan_data.get("plans", [])
-                    if len(plans) != len(chunks_info):
-                        raise ValueError(
-                            f"规划结果中的切片数量 ({len(plans)}) 与输入的切片数量 ({len(chunks_info)}) 不一致"
-                        )
-                    
-                    # 验证每个计划的 chunk_id 是否匹配
-                    input_chunk_ids = {chunk["chunk_id"] for chunk in chunks_info}
-                    plan_chunk_ids = {plan.get("chunk_id") for plan in plans}
-                    
-                    if input_chunk_ids != plan_chunk_ids:
-                        missing_ids = input_chunk_ids - plan_chunk_ids
-                        extra_ids = plan_chunk_ids - input_chunk_ids
-                        error_parts = []
-                        if missing_ids:
-                            error_parts.append(f"缺少切片 ID: {missing_ids}")
-                        if extra_ids:
-                            error_parts.append(f"多余的切片 ID: {extra_ids}")
-                        raise ValueError("规划结果中的切片 ID 与输入不匹配: " + ", ".join(error_parts))
-                    
-                    # 构建 TextbookGenerationPlan 对象
-                    chunk_plans = []
-                    for plan_item in plans:
-                        chunk_plan = ChunkGenerationPlan(**plan_item)
-                        chunk_plans.append(chunk_plan)
-                    
-                    # 计算总题目数量
-                    total_questions = sum(plan.question_count for plan in chunk_plans)
-                    
-                    # 使用 LLM 返回的顶层 type_distribution（统计所有切片的题型分布总和）
-                    # 如果 LLM 没有返回，则从各切片的 type_distribution 汇总
-                    type_distribution = plan_data.get("type_distribution", {})
-                    if not type_distribution:
-                        # 如果 LLM 没有返回顶层 type_distribution，从各切片汇总
-                        type_distribution = {}
-                        for plan in chunk_plans:
-                            for q_type, count in plan.type_distribution.items():
-                                type_distribution[q_type] = type_distribution.get(q_type, 0) + count
-                    
-                    # 创建 TextbookGenerationPlan 对象
-                    textbook_plan = TextbookGenerationPlan(
-                        plans=chunk_plans,
-                        total_questions=total_questions,
-                        type_distribution=type_distribution
-                    )
-                    
-                    logger.info(f"[规划任务] 规划完成 - 总题目数: {total_questions}, 题型分布: {type_distribution}")
-                    return textbook_plan
-                    
-                except Exception as e:
-                    # 验证失败，尝试重试
-                    logger.warning(f"[规划任务] 规划验证失败，准备重试 - 重试次数: {retry_count}/{MAX_RETRIES}, 错误: {str(e)}")
-                    if retry_count < MAX_RETRIES:
-                        import asyncio
-                        retry_delay = get_retry_delay(self.model, retry_count)
-                        await asyncio.sleep(retry_delay)
-                        return await self.plan_generation_tasks(
-                            textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
-                        )
-                    else:
-                        try:
-                            error_msg = repr(e) if hasattr(e, '__repr__') else "规划任务验证错误"
-                        except (UnicodeEncodeError, UnicodeDecodeError):
-                            error_msg = "规划任务验证错误"
-                        logger.error(f"[规划任务] 规划验证失败，已达最大重试次数 - 错误: {error_msg}")
-                        raise ValueError(f"规划任务验证失败（已重试{MAX_RETRIES}次）: {error_msg}")
-                
-        except httpx.TimeoutException:
-            # 超时错误，尝试重试
-            logger.warning(f"[规划任务] 请求超时，准备重试 - 重试次数: {retry_count}/{MAX_RETRIES}, 模型: {self.model}")
-            if retry_count < MAX_RETRIES:
-                import asyncio
-                retry_delay = get_retry_delay(self.model, retry_count)
-                await asyncio.sleep(retry_delay)
-                return await self.plan_generation_tasks(
-                    textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
-                )
-            logger.error(f"[规划任务] 请求超时，已达最大重试次数 - 模型: {self.model}")
-            raise ValueError(f"规划任务请求超时（已重试{MAX_RETRIES}次，模型: {self.model}）")
-        except httpx.HTTPStatusError as e:
-            # HTTP错误，某些错误可以重试
-            if e.response.status_code >= 500 and retry_count < MAX_RETRIES:
-                import asyncio
-                retry_delay = get_retry_delay(self.model, retry_count)
-                await asyncio.sleep(retry_delay)
-                return await self.plan_generation_tasks(
-                    textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
-                )
-            error_msg = f"OpenRouter API 请求失败: HTTP {e.response.status_code} (模型: {self.model})"
-            if e.response.text:
-                response_text_safe = e.response.text[:500].encode('utf-8', errors='replace').decode('utf-8')
-                error_msg += f"\n响应内容: {response_text_safe}"
-            raise ValueError(error_msg)
-        except httpx.RequestError as e:
-            # 网络错误，可以重试
-            if retry_count < MAX_RETRIES:
-                import asyncio
-                retry_delay = get_retry_delay(self.model, retry_count)
-                await asyncio.sleep(retry_delay)
-                return await self.plan_generation_tasks(
-                    textbook_name, chunks_info, mode, allowed_question_types, retry_count + 1
-                )
-            try:
-                error_msg = repr(e) if hasattr(e, '__repr__') else "网络请求错误"
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                error_msg = "网络请求错误"
-            raise ValueError(f"OpenRouter API 请求错误: {error_msg} (模型: {self.model})")
-        except Exception as e:
-            try:
-                error_msg = repr(e) if hasattr(e, '__repr__') else "未知错误"
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                error_msg = "规划任务时发生未知错误"
-            raise ValueError(f"规划任务时发生错误: {error_msg}")
 
     async def _generate_batch(
         self,

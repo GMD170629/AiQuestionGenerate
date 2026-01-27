@@ -105,7 +105,9 @@ async function sortQuestionsByChapterOrder(questions: Question[]): Promise<Quest
   // 为每个文件获取章节信息
   const chapterMap = new Map<string, Map<string, ChapterInfo>>() // fileId -> (chapterName -> ChapterInfo)
   
-  for (const fileId of questionsByFile.keys()) {
+  // 将 Map.keys() 转换为数组以兼容 ES5 目标
+  const fileIds = Array.from(questionsByFile.keys())
+  for (const fileId of fileIds) {
     if (!fileId) continue
     
     try {

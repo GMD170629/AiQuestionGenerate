@@ -46,12 +46,12 @@ export default function QuestionManager({ questions, sourceFile, chapter, onClos
   }, {} as Record<string, number>)
 
   // 导出为 Markdown
-  const exportToMarkdown = () => {
+  const exportToMarkdown = async () => {
     const filename = sourceFile 
       ? sourceFile.replace(/\.md$/i, '')
       : '习题集'
     
-    exportAndDownload(questions, {
+    await exportAndDownload(questions, {
       title: '习题集',
       sourceFile: sourceFile,
       chapter: chapter,

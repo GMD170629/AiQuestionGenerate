@@ -50,6 +50,7 @@ interface FileInfo {
   file_path: string
   display_order?: number
   textbooks?: Array<{ textbook_id: string; name: string }>
+  knowledge_extraction?: KnowledgeExtractionStatus
 }
 
 interface FileContent {
@@ -266,6 +267,7 @@ export default function TextbookFiles({ textbookId }: TextbookFilesProps) {
   const [viewingChunksFileId, setViewingChunksFileId] = useState<string | null>(null)
   const [startingKnowledgeExtractionFileId, setStartingKnowledgeExtractionFileId] = useState<string | null>(null)
   const [retryingFileId, setRetryingFileId] = useState<string | null>(null)
+  const [addingFileId, setAddingFileId] = useState<string | null>(null)
   const [knowledgeStatuses, setKnowledgeStatuses] = useState<Record<string, KnowledgeExtractionStatus>>({})
   const eventSourceRefs = useRef<Record<string, EventSource>>({})
 
@@ -280,12 +282,6 @@ export default function TextbookFiles({ textbookId }: TextbookFilesProps) {
     fetchTextbookDetail()
     fetchAllFiles()
   }, [textbookId])
-
-  useEffect(() => {
-    if (textbook?.files && textbook.files.length > 0) {
-      fetchKnowledgeStatuses()
-    }
-  }, [textbook?.files])
 
   // 订阅知识点提取进度（SSE）
   useEffect(() => {
@@ -379,22 +375,18 @@ export default function TextbookFiles({ textbookId }: TextbookFilesProps) {
     }
   }
 
-  const fetchKnowledgeStatuses = async () => {
-    if (!textbook?.files) return
-    const statuses: Record<string, KnowledgeExtractionStatus> = {}
-    for (const file of textbook.files) {
-      try {
-        const response = await fetch(getApiUrl(`/knowledge-extraction/${file.file_id}/status`))
-        if (response.ok) {
-          const status = await response.json()
-          statuses[file.file_id] = status
+  // 从教材数据中提取知识点状态
+  useEffect(() => {
+    if (textbook?.files) {
+      const statuses: Record<string, KnowledgeExtractionStatus> = {}
+      for (const file of textbook.files) {
+        if (file.knowledge_extraction) {
+          statuses[file.file_id] = file.knowledge_extraction
         }
-      } catch (err) {
-        console.error(`获取文件 ${file.file_id} 的知识点提取状态失败:`, err)
       }
+      setKnowledgeStatuses(statuses)
     }
-    setKnowledgeStatuses(statuses)
-  }
+  }, [textbook?.files])
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event
@@ -437,6 +429,8 @@ export default function TextbookFiles({ textbookId }: TextbookFilesProps) {
 
   const handleAddFile = async (fileId: string) => {
     try {
+      setAddingFileId(fileId)
+      
       const response = await fetch(getApiUrl(`/textbooks/${textbookId}/files`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -448,10 +442,30 @@ export default function TextbookFiles({ textbookId }: TextbookFilesProps) {
         throw new Error(errorData.detail || '添加文件失败')
       }
 
-      await fetchTextbookDetail()
-      setShowAddDialog(false)
+      // 找到要添加的文件信息
+      const fileToAdd = allFiles.find(f => f.file_id === fileId)
+      if (!fileToAdd) {
+        throw new Error('找不到文件信息')
+      }
+
+      // 直接更新本地状态，不刷新页面
+      if (textbook) {
+        const newFile: FileInfo = {
+          ...fileToAdd,
+          display_order: (textbook.files?.length || 0),
+        }
+        
+        setTextbook({
+          ...textbook,
+          files: [...(textbook.files || []), newFile],
+          file_count: (textbook.file_count || 0) + 1,
+          updated_at: new Date().toISOString(),
+        })
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : '添加文件失败')
+    } finally {
+      setAddingFileId(null)
     }
   }
 
@@ -501,7 +515,8 @@ export default function TextbookFiles({ textbookId }: TextbookFilesProps) {
         throw new Error(errorData.detail || '启动知识点提取失败')
       }
 
-      await fetchKnowledgeStatuses()
+      // 重新获取教材详情以更新知识点状态
+      await fetchTextbookDetail()
     } catch (err) {
       alert(err instanceof Error ? err.message : '启动知识点提取失败')
     } finally {
@@ -699,14 +714,40 @@ export default function TextbookFiles({ textbookId }: TextbookFilesProps) {
                           <span>{formatDate(file.upload_time)}</span>
                         </div>
                       </div>
-                      <motion.button
-                        onClick={() => handleAddFile(file.file_id)}
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        className="btn btn-primary flex-shrink-0 px-6"
-                      >
-                        添加
-                      </motion.button>
+                      {(() => {
+                        const isAdding = addingFileId === file.file_id
+                        const isAdded = textbook?.files?.some(tf => tf.file_id === file.file_id) || false
+                        
+                        if (isAdded) {
+                          return (
+                            <motion.button
+                              disabled
+                              className="btn btn-secondary flex-shrink-0 px-6 opacity-50 cursor-not-allowed"
+                            >
+                              已添加
+                            </motion.button>
+                          )
+                        }
+                        
+                        return (
+                          <motion.button
+                            onClick={() => handleAddFile(file.file_id)}
+                            disabled={isAdding}
+                            whileHover={isAdding ? {} : { scale: 1.05 }}
+                            whileTap={isAdding ? {} : { scale: 0.95 }}
+                            className="btn btn-primary flex-shrink-0 px-6 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {isAdding ? (
+                              <span className="flex items-center gap-2">
+                                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                                添加中...
+                              </span>
+                            ) : (
+                              '添加'
+                            )}
+                          </motion.button>
+                        )
+                      })()}
                     </motion.div>
                   ))}
               </div>

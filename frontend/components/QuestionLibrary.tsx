@@ -314,7 +314,7 @@ export default function QuestionLibrary() {
                     filename += `_${selectedDifficulty}`
                   }
                   
-                  exportAndDownload(allQuestions, {
+                  await exportAndDownload(allQuestions, {
                     title: '题目库',
                     filename: filename,
                     includeAnswer: true,

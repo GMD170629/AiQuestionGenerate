@@ -4,6 +4,7 @@
  */
 
 import { Question } from '@/types/question'
+import { getApiUrl } from '@/lib/api'
 
 /**
  * 格式化答案/解析内容，避免 Markdown 列表格式冲突
@@ -66,6 +67,108 @@ function difficultyToNumber(difficulty: string): number {
     default:
       return 2 // 默认中等
   }
+}
+
+/**
+ * 章节信息接口
+ */
+interface ChapterInfo {
+  chapter_id: string
+  file_id: string
+  name: string
+  level: number
+  display_order: number
+  chunk_ids: number[]
+}
+
+/**
+ * 按照图书章节顺序对题目列表进行排序
+ * 根据章节的display_order和chunk顺序排序
+ * @param questions 题目列表
+ * @returns 排序后的题目列表（Promise）
+ */
+async function sortQuestionsByChapterOrder(questions: Question[]): Promise<Question[]> {
+  if (questions.length === 0) {
+    return questions
+  }
+  
+  // 按file_id分组题目
+  const questionsByFile = new Map<string, Question[]>()
+  for (const question of questions) {
+    const fileId = question.file_id || ''
+    if (!questionsByFile.has(fileId)) {
+      questionsByFile.set(fileId, [])
+    }
+    questionsByFile.get(fileId)!.push(question)
+  }
+  
+  // 为每个文件获取章节信息
+  const chapterMap = new Map<string, Map<string, ChapterInfo>>() // fileId -> (chapterName -> ChapterInfo)
+  
+  for (const fileId of questionsByFile.keys()) {
+    if (!fileId) continue
+    
+    try {
+      // 获取文件的章节列表
+      const response = await fetch(getApiUrl(`/files/${fileId}/chapters/flat`))
+      if (response.ok) {
+        const data = await response.json()
+        const chapters: ChapterInfo[] = data.chapters || []
+        
+        // 建立章节名称到章节信息的映射
+        const fileChapterMap = new Map<string, ChapterInfo>()
+        for (const chapter of chapters) {
+          fileChapterMap.set(chapter.name, chapter)
+        }
+        chapterMap.set(fileId, fileChapterMap)
+      }
+    } catch (error) {
+      console.warn(`获取文件 ${fileId} 的章节信息失败:`, error)
+    }
+  }
+  
+  // 为每个题目计算排序键
+  const questionsWithSortKey = questions.map(question => {
+    const fileId = question.file_id || ''
+    const chapterName = question.chapter || ''
+    const fileChapterMap = chapterMap.get(fileId)
+    
+    let sortKey: number[] = [999999] // 默认放在最后
+    
+    if (fileChapterMap && chapterName) {
+      const chapterInfo = fileChapterMap.get(chapterName)
+      if (chapterInfo) {
+        // 使用章节的level和display_order作为排序键
+        // level越小越靠前，display_order越小越靠前
+        sortKey = [chapterInfo.level, chapterInfo.display_order]
+      }
+    }
+    
+    return { question, sortKey }
+  })
+  
+  // 排序
+  questionsWithSortKey.sort((a, b) => {
+    // 先按file_id排序（不同文件的题目分开）
+    const fileIdA = a.question.file_id || ''
+    const fileIdB = b.question.file_id || ''
+    if (fileIdA !== fileIdB) {
+      return fileIdA.localeCompare(fileIdB)
+    }
+    
+    // 再按章节排序键排序
+    const minLength = Math.min(a.sortKey.length, b.sortKey.length)
+    for (let i = 0; i < minLength; i++) {
+      if (a.sortKey[i] !== b.sortKey[i]) {
+        return a.sortKey[i] - b.sortKey[i]
+      }
+    }
+    
+    // 如果排序键相同，保持原有顺序
+    return 0
+  })
+  
+  return questionsWithSortKey.map(item => item.question)
 }
 
 /**
@@ -250,7 +353,7 @@ export function downloadMarkdown(content: string, filename: string = '习题集'
  * @param questions 题目列表
  * @param options 导出选项
  */
-export function exportAndDownload(
+export async function exportAndDownload(
   questions: Question[],
   options?: {
     title?: string
@@ -260,8 +363,10 @@ export function exportAndDownload(
     includeExplanation?: boolean
     filename?: string
   }
-): void {
-  const content = exportQuestionsToMarkdown(questions, options)
+): Promise<void> {
+  // 按照图书章节顺序排序题目（根据章节的display_order和chunk顺序）
+  const sortedQuestions = await sortQuestionsByChapterOrder(questions)
+  const content = exportQuestionsToMarkdown(sortedQuestions, options)
   const filename = options?.filename || options?.title || '习题集'
   downloadMarkdown(content, filename)
 }
